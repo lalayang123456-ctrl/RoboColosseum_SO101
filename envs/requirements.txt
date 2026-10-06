@@ -1,0 +1,17 @@
+# Verified working set for running checkpoints/molmoact2-so101-stack-white_bowls-100episodes
+# (policy.type = "molmoact2") on this machine's RTX 5090 Laptop GPU (Blackwell, needs cu128+).
+# torch/torchvision MUST come from the cu128 index (a plain `pip install torch` will not have
+# Blackwell/sm_120 kernels, and a plain `pip install torchvision` will mismatch the ABI):
+#
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#   pip install -r envs/requirements.txt
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+lerobot==0.6.1
+transformers==5.17.0
+scipy==1.18.1
+accelerate==1.15.0
+safetensors==0.8.0
+huggingface_hub==1.32.0
+numpy==2.2.6
+av==18.1.0          # video_backend: pyav

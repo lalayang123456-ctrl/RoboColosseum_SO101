@@ -1,0 +1,60 @@
+# Reconstructed robot_config.yaml for lingbot-vla-v2 fine-tuned on SO-101
+# (checkpoints/lingbot-vla-v2-6b-so101-stack-white_bowls-100episodes).
+#
+# NOT the original file used for training -- that lived at the training
+# cluster's internal robot_config_root path (per lingbotvla_cli.yaml,
+# /scratch/e1583535/.../scripts/lingbot/configs/robot_configs) and was never
+# published alongside the checkpoint's weights on Hugging Face. This is a
+# best-effort reconstruction built from:
+#   - the public format spec (lingbotvla/data/vla_data/README.md) and its
+#     robotwin.yaml / agilex_cobot_magic.yaml examples
+#   - our dataset's known schema: observation.state/action are 6-dim
+#     [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]
+#   - the doc's recommendation for real-world data: subtract_state=True for
+#     arm.position, False for effector.position (see agilex_cobot_magic.yaml)
+#
+# Verified against the training data (scripts: offline probe of the running
+# server on episode-0 frames): arm as a joint-space DELTA (subtract_state True +
+# an explicit non-quaternion relative_type -- this code version defaults every
+# action to a quaternion relative type and asserts otherwise) with norm stats
+# computed on action[t+k]-state[t] over the 50-step chunk, gripper absolute.
+# Mean |error| vs recorded actions over a 25-step chunk: <=4.3 deg per joint.
+# The absolute-arm variant was clearly wrong (arm errors 15-56 deg).
+#
+# If you still have the original training run's actual robot_config.yaml,
+# prefer that over this reconstruction before deploying to real hardware.
+
+states:
+  - observation.state.arm.position:
+      origin_keys:
+        - observation.state:
+            start: 0
+            end: 5
+  - observation.state.effector.position:
+      origin_keys:
+        - observation.state:
+            start: 5
+            end: 6
+
+actions:
+  - action.arm.position:
+      origin_keys:
+        - action:
+            start: 0
+            end: 5
+      subtract_state: True
+      relative_type: joint
+  - action.effector.position:
+      origin_keys:
+        - action:
+            start: 5
+            end: 6
+      subtract_state: False
+
+images:
+  - observation.images.camera_top:
+      origin_keys: observation.images.front
+  - observation.images.camera_wrist_left:
+      origin_keys: observation.images.wrist
+
+norm_stats: configs/lingbot/norm_stats/so101_stack_white_bowls.json

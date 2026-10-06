@@ -1,0 +1,27 @@
+# SO100/SO101 parts_meta for GroupedPaddingMerger.
+#
+# Not part of upstream GalaxeaVLA (89f2322); reconstructed for the RoboColosseum
+# g05-so101-* checkpoints, whose .hydra/config.yaml references this file.
+# Must reproduce the 27D grouped layout those checkpoints were trained with
+# (model_arch.action_dim=27, tokenizer parts_meta below):
+#   left_control(9) | left_gripper(1) | right_control(9) | right_gripper(1) | lower_body(7)
+#
+# SO101 data only provides right_arm (6 = 5 joints + gripper), which is
+# padded into right_control; every other group is padding.
+
+parts_meta:
+  left_arm: 6
+  right_arm: 6
+  left_gripper: 1
+  right_gripper: 1
+  left_ee_pose: 9
+  right_ee_pose: 9
+  lower_body: 7
+  torso: 4
+
+merge_spec:
+  left_control: [left_arm, left_ee_pose]
+  left_gripper: [left_gripper]
+  right_control: [right_arm, right_ee_pose]
+  right_gripper: [right_gripper]
+  lower_body: [lower_body, torso]

@@ -1,0 +1,26 @@
+# Large local data / weights (kept out of the repo)
+/checkpoints/
+/so101_finetuning_eval/
+/datasets/
+/outputs/
+
+# Secrets
+.env
+
+# Virtual environments
+.venv/
+.venv-*/
+
+# Python / tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.cache/
+
+# Separate upstream git repos (frodobots-org), not part of this repo
+/colosseum-client/
+/colosseum-policy-server/
+
+# Contains local tokens
+/command.md
