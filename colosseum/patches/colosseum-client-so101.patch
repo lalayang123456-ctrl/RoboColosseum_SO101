@@ -1,0 +1,924 @@
+From e050ea75d813260853a0d883414eee6a2945a0ea Mon Sep 17 00:00:00 2001
+From: lalayang123456-ctrl <lalayang123456-ctrl@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 18:34:45 +0800
+Subject: [PATCH] feat: add SO-ARM101 LeRobot driver and local evaluation
+ support
+
+Implement the SO101 adapter on LeRobot's so101_follower Feetech driver and
+its RealSense/OpenCV cameras, and enable Local Policy evaluation for the
+6-D joint_position contract (five joints in degrees, gripper 0-100).
+
+- Clamp commands to configured joint limits; reject malformed actions.
+- Return to the start pose before releasing torque on shutdown.
+- Never start LeRobot's interactive calibration from an evaluation.
+- Export state/action with LeRobot's motor names; no fabricated FK pose.
+- Add the so101 extra, config example, guide and tests with fake hardware.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ README.md                               |   2 +-
+ configs/robot.so101.yaml.example        |  45 +++++
+ configs/robot.yaml.example              |   3 +-
+ docs/client-reference.md                |   9 +-
+ docs/robot-adapters.md                  |   9 +-
+ docs/so101.md                           |  89 ++++++++++
+ pyproject.toml                          |   2 +
+ src/colosseum_client/adapters.py        |   4 +
+ src/colosseum_client/evaluation.py      |  17 +-
+ src/colosseum_client/lerobot_export.py  |  14 ++
+ src/colosseum_client/robots/__init__.py |   2 +-
+ src/colosseum_client/robots/so101.py    | 221 +++++++++++++++++++----
+ tests/test_adapters.py                  |   4 +-
+ tests/test_lerobot_export.py            |  18 ++
+ tests/test_local_compat_integration.py  |   2 +-
+ tests/test_so101.py                     | 222 ++++++++++++++++++++++++
+ 16 files changed, 610 insertions(+), 53 deletions(-)
+ create mode 100644 configs/robot.so101.yaml.example
+ create mode 100644 docs/so101.md
+ create mode 100644 tests/test_so101.py
+
+diff --git a/README.md b/README.md
+index 5d7978c..224c5f6 100644
+--- a/README.md
++++ b/README.md
+@@ -45,7 +45,7 @@ action retains its numeric record only; its image is not included in the dataset
+ | Robot | `robot_type` | Status |
+ | --- | --- | --- |
+ | [Franka](src/colosseum_client/robots/franka.py) | `franka` | Implemented |
+-| [SO-ARM101](src/colosseum_client/robots/so101.py) | `so101` | TODO |
++| [SO-ARM101](src/colosseum_client/robots/so101.py) | `so101` | [LeRobot driver and setup](docs/so101.md) |
+ | [Bimanual YAM](src/colosseum_client/robots/yam.py) | `yam` | [I2RT driver and setup](docs/yam.md); hardware validation pending |
+ | [Unitree G1](src/colosseum_client/robots/g1.py) | `g1` | TODO |
+ 
+diff --git a/configs/robot.so101.yaml.example b/configs/robot.so101.yaml.example
+new file mode 100644
+index 0000000..909056e
+--- /dev/null
++++ b/configs/robot.so101.yaml.example
+@@ -0,0 +1,45 @@
++router_url: wss://YOUR_ROUTER
++# Obtain the Client token and its bound Institution from your Colosseum administrator.
++token: REPLACE_WITH_CLIENT_TOKEN
++institution: YOUR_INSTITUTION
++robot_type: so101
++track: 1
++scene: REPLACE_WITH_SCENE_DESCRIPTION
++evaluator: REPLACE_WITH_EVALUATOR_NAME
++policy_server_url: ws://127.0.0.1:8000
++# Must match the control rate of the models registered for SO101 on the Router.
++control_hz: 30
++# Sent to the model and recorded at this size; cameras capture 640x480 by default.
++image_width: 640
++image_height: 480
++cameras:
++  # A numeric RealSense serial, or a V4L2 index/path. Prefer /dev/v4l/by-id/...
++  # paths for webcams: /dev/videoN indices can change across reboots.
++  head_image: TOP_CAMERA_REALSENSE_SERIAL
++  left_image: /dev/v4l/by-id/YOUR_WRIST_CAMERA-video-index0
++adapter_config:
++  port: /dev/serial/by-id/YOUR_FOLLOWER_ARM
++  # LeRobot calibration id (as used with lerobot-calibrate --robot.id).
++  robot_id: follower_arm
++  # Optional: defaults to LeRobot's calibration directory.
++  # calibration_dir: /absolute/path/to/calibration
++  # REQUIRED five-element arrays in degrees: shoulder_pan, shoulder_lift,
++  # elbow_flex, wrist_flex, wrist_roll. Commands are clamped to this range.
++  joint_low: null
++  joint_high: null
++  # Optional LeRobot per-command limit in degrees from the measured position.
++  # Larger commands are shortened, which adds one bus read per control step.
++  # max_relative_target: 20
++  # Optional: override type detection, e.g. {head_image: opencv}.
++  # camera_types: {}
++  # camera_width: 640
++  # camera_height: 480
++  # camera_fps: 30
++  # On shutdown, move back to the pose measured at start-up before releasing torque.
++  return_to_start: true
++  # return_step_deg: 1.5
++recording: true
++skip_upload: false
++max_trial_steps: 800
++# test: true bypasses all hardware, including calibration checks.
++test: false
+diff --git a/configs/robot.yaml.example b/configs/robot.yaml.example
+index 720aa28..4a3d02e 100644
+--- a/configs/robot.yaml.example
++++ b/configs/robot.yaml.example
+@@ -10,7 +10,8 @@ token: clt_replace_with_token_from_admin
+ institution: replace_with_institution_from_admin
+ 
+ ## Robot implementation: franka | so101 | yam | g1.
+-## SO101, YAM and G1 drivers are currently TODOs.
++## For so101 and yam, start from configs/robot.so101.yaml.example or robot.yam.yaml.example.
++## The G1 driver is currently a TODO.
+ robot_type: franka
+ 
+ ## Map camera roles to your physical camera IDs. Replace the placeholders.
+diff --git a/docs/client-reference.md b/docs/client-reference.md
+index bbcce08..20845a7 100644
+--- a/docs/client-reference.md
++++ b/docs/client-reference.md
+@@ -68,7 +68,8 @@ flowchart TD
+ ```
+ 
+ Franka uses the existing `DroidRobot` implementation in `robots/franka.py`.
+-SO101, YAM and G1 are TODO skeletons and currently stop before opening hardware.
++SO101 uses LeRobot (`robots/so101.py`) and YAM uses I2RT (`robots/yam.py`); G1 is a
++TODO skeleton and currently stops before opening hardware.
+ `test: true` bypasses hardware drivers; it does not validate a real robot or
+ provide a real model runtime. Policy readiness depends on the selected server.
+ `--no-execute-action` still reads the robot and requests inference.
+@@ -133,9 +134,9 @@ In remote mode, the Client uses the Router WebSocket at `router_url`.
+ 
+ See [Robot adapter integration](robot-adapters.md) for external Python
+ packages (entry points selected by `robot_type`), `adapter_config`, custom camera roles
+-and the shared configuration example. SO101, YAM and G1 are provided
+-as **unimplemented templates**; they do not control hardware. DROID remains the
+-existing hardware implementation. Set only `robot_type: franka`, `so101`, `yam`
++and the shared configuration example. G1 is provided as an **unimplemented
++template**; it does not control hardware. See the [SO101](so101.md) and
++[YAM](yam.md) guides for those drivers. Set only `robot_type: franka`, `so101`, `yam`
+ or `g1`; no `adapter` selection field is needed.
+ 
+ The shared contract lives in `robot_interface.py`; new hardware implementations
+diff --git a/docs/robot-adapters.md b/docs/robot-adapters.md
+index 729e151..55220eb 100644
+--- a/docs/robot-adapters.md
++++ b/docs/robot-adapters.md
+@@ -25,7 +25,7 @@ policy on the Router.
+ | `src/colosseum_client/robot_interface.py` | Shared `RobotObservation` and `Robot` contract |
+ | `src/colosseum_client/adapters.py` | Select a built-in or external adapter |
+ | `src/colosseum_client/robots/franka.py` | Existing Franka driver (`DroidRobot`, using DROID/R2D2) |
+-| `src/colosseum_client/robots/so101.py` | SO101 hardware integration TODOs |
++| `src/colosseum_client/robots/so101.py` | SO101 LeRobot driver (see [SO101 setup](so101.md)) |
+ | `src/colosseum_client/robots/yam.py` | Bimanual YAM I2RT driver (see [YAM setup](yam.md)) |
+ | `src/colosseum_client/robots/g1.py` | G1 hardware integration TODOs |
+ | `src/colosseum_client/evaluation.py` | Shared trial, observation and action loop |
+@@ -68,7 +68,7 @@ real inference validation as separate milestones.
+ | `robot_type` | Status |
+ | --- | --- |
+ | `franka` | Existing DROID/R2D2 hardware driver |
+-| `so101` | TODO template; no hardware driver |
++| `so101` | LeRobot Feetech driver + LeRobot cameras; [setup and behavior](so101.md) |
+ | `yam` | Bimanual I2RT + three RealSense cameras; [setup and validation limits](yam.md) |
+ | `g1` | TODO template; no hardware driver |
+ 
+@@ -78,6 +78,7 @@ Templates are in `src/colosseum_client/robots/`. They raise `NotImplementedError
+ at construction, before opening hardware. Their joint/action dimensions are
+ deliberately unspecified: choose the actual controlled joints and policy contract.
+ For YAM use `configs/robot.yam.yaml.example` and [the YAM guide](yam.md).
++For SO101 use `configs/robot.so101.yaml.example` and [the SO101 guide](so101.md).
+ Other robots share `configs/robot.yaml.example`. Copy it to `configs/robot.yaml`
+ and change `robot_type` to `franka`, `so101`, `yam`, `g1`, or an installed external
+ robot type. Set the camera IDs and hardware settings for the selected robot.
+@@ -137,8 +138,8 @@ but require a corresponding Router API change before evaluation can use them.
+ `execute` and `close`; Python rejects instantiation if any abstract method is
+ missing. Constructors remain driver-specific. Hardware metadata fields must also
+ be supplied by the driver; ABC does not validate their values or action semantics.
+-The SO101/G1 skeletons override these methods with `NotImplementedError` and
+-still fail explicitly in their constructors until hardware support is implemented.
++The G1 skeleton overrides these methods with `NotImplementedError` and
++still fails explicitly in its constructor until hardware support is implemented.
+ 
+ ```python
+ from colosseum_client import Robot, RobotClientConfig, RobotObservation
+diff --git a/docs/so101.md b/docs/so101.md
+new file mode 100644
+index 0000000..f11d4be
+--- /dev/null
++++ b/docs/so101.md
+@@ -0,0 +1,89 @@
++# SO-ARM101
++
++This Client implementation targets **one SO-ARM101 follower arm** driven through
++[LeRobot](https://github.com/huggingface/lerobot)'s `so101_follower` Feetech
++driver, with cameras opened through LeRobot's RealSense and OpenCV drivers.
++It does not support the leader arm, bimanual setups or other servo firmware.
++Software tests use a fake follower; closed-loop task performance depends on your
++rig, calibration and the model served by the Policy Server.
++
++## Contract
++
++- `robot_type: so101`, absolute `joint_position`, 6 values.
++- Action/state order: `shoulder_pan, shoulder_lift, elbow_flex, wrist_flex,
++  wrist_roll, gripper`. This is LeRobot's `so101_follower` convention with
++  `use_degrees=True`: joint angles are **degrees** relative to the calibrated
++  mid-range, and the gripper is its opening in **[0, 100]** (0 closed, 100 open).
++  Values are neither converted to radians nor binarized.
++- Transport observations split `joint_position` into five values and
++  `gripper_position` into one. LeRobot export concatenates them again and names
++  the dimensions `shoulder_pan.pos` ... `gripper.pos`, matching datasets recorded
++  with `lerobot-record`.
++- Camera roles follow the Router task (`head_image`, `left_image`, `right_image`).
++  A typical rig uses `head_image` for the fixed top/front camera and `left_image`
++  for the wrist camera. Images are RGB uint8; cameras capture 640x480 at 30 FPS
++  by default and are resized only if `image_width`/`image_height` differ.
++  Each observation uses the latest frame from every camera; cameras are not
++  hardware synchronized.
++- Cartesian pose is unavailable: the driver returns an empty vector and export
++  omits `observation.cartesian_position`. It never fabricates a zero pose.
++- The control rate is not fixed by the driver. Set `control_hz` to the rate of
++  the models registered for SO101 on your Router (LeRobot datasets commonly use 30).
++
++## Install and configure the robot host
++
++LeRobot requires Python 3.12 or newer. From the `colosseum-client` checkout:
++
++```bash
++uv sync --python 3.12 --extra so101
++cp configs/robot.so101.yaml.example configs/robot.so101.yaml
++```
++
++Install ffmpeg for recording/export. Calibrate the arm once with LeRobot, using
++the same id you put in `adapter_config.robot_id`:
++
++```bash
++.venv/bin/lerobot-calibrate --robot.type=so101_follower --robot.port=/dev/ttyACM0 --robot.id=follower_arm
++```
++
++The driver never starts LeRobot's interactive calibration: an uncalibrated arm,
++or one whose stored motor calibration differs from the calibration file, fails
++at start-up instead.
++
++Fill in the Router URL/token, serial port, camera IDs and the two five-element
++arrays `joint_low` and `joint_high` in degrees. Placeholder nulls deliberately
++fail before opening hardware. A numeric ID longer than four digits is opened as
++a RealSense serial; anything else is a V4L2 index or path. Set
++`adapter_config.camera_types` to override that.
++
++## Motion and shutdown behavior
++
++- Malformed and nonfinite actions are rejected before any motor command.
++- Joint targets are **clamped** to `[joint_low, joint_high]` and the gripper to
++  `[0, 100]`. Learned policies often overshoot a calibrated end stop by a
++  fraction of a degree; rejecting those would abort trials that are otherwise
++  valid. Recorded actions are the model's commands before clamping.
++- Optional `max_relative_target` uses LeRobot's limit: a command further than
++  that many degrees from the measured position is shortened, not rejected.
++- Starting a trial enables motor torque at the current pose. The driver does not
++  home the arm: place it in its rest pose before confirming each trial.
++- At the end of a trial, including after errors and Ctrl-C, the arm moves back
++  to the pose measured at start-up in steps of at most `return_step_deg`, then
++  releases torque. Set `return_to_start: false` to release torque where the arm
++  stopped; an unsupported arm will then drop under gravity.
++
++## Run
++
++```bash
++uv run --no-sync colosseum-robot configs/robot.so101.yaml --no-execute-action
++# After checking observations and the returned actions:
++uv run --no-sync colosseum-robot configs/robot.so101.yaml
++```
++
++`--no-execute-action` still enables torque, reads the arm and cameras and
++requests inference; only the model's commands are skipped.
++
++Local Policy evaluation is enabled for `so101` with the 6-value
++`joint_position` contract. The Policy Server needs a model adapter that supports
++`robot_type: so101`, and the Router needs matching model registrations; this
++driver does not provide either.
+diff --git a/pyproject.toml b/pyproject.toml
+index b50a930..cfab8ff 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -20,6 +20,8 @@ dependencies = [
+ 
+ [project.optional-dependencies]
+ franka = ["droid"]
++# LeRobot supplies the Feetech bus, calibration and camera drivers; it requires Python 3.12+.
++so101 = ["lerobot[feetech,intelrealsense]>=0.6,<0.7; python_version >= '3.12'"]
+ yam = ["pyrealsense2>=2.55,<3"]  # Install the pinned I2RT SDK separately; see docs/yam.md.
+ modelscope = ["modelscope-hub>=0.4.5,<0.5"]
+ huggingface = ["huggingface-hub>=1.0,<2"]
+diff --git a/src/colosseum_client/adapters.py b/src/colosseum_client/adapters.py
+index 849af89..2e387cf 100644
+--- a/src/colosseum_client/adapters.py
++++ b/src/colosseum_client/adapters.py
+@@ -73,6 +73,10 @@ class TestRobot(Robot):
+                 raise ValueError('Synthetic YAM requires 14-D joint_position')
+             self.joint_count = 12
+             self.gripper = np.zeros(2, dtype=np.float32)
++        if self.robot_type == 'so101' and self.action_space_name == 'joint_position':
++            if self.action_dim != 6:
++                raise ValueError('Synthetic SO101 requires 6-D joint_position')
++            self.joint_count = 5
+         self.joints = np.zeros(self.joint_count, dtype=np.float32)
+ 
+     def get_observation(self):
+diff --git a/src/colosseum_client/evaluation.py b/src/colosseum_client/evaluation.py
+index 221b067..86970ed 100644
+--- a/src/colosseum_client/evaluation.py
++++ b/src/colosseum_client/evaluation.py
+@@ -192,15 +192,17 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
+         robot = None
+         local_mode = assignment.get('inference_mode', 'remote') == 'local'
+         if local_mode:
+-            if not config.test and config.robot_type not in {'franka', 'yam'}:
+-                raise ValueError('Local Policy evaluation currently supports robot_type: franka or yam')
++            if not config.test and config.robot_type not in {'franka', 'yam', 'so101'}:
++                raise ValueError('Local Policy evaluation currently supports robot_type: franka, yam or so101')
+             from .local_policy import LocalPolicyClient
++            joint_count, action_spaces = {
++                'yam': (12, {'joint_position': 14}),
++                'so101': (5, {'joint_position': 6}),
++            }.get(config.robot_type, (7, {'joint_position': 8, 'joint_velocity': 8, 'cartesian_position': 7}))
+             client = LocalPolicyClient(
+                 config, api_url(config), robot_type=config.robot_type,
+-                joint_count=12 if config.robot_type == 'yam' else 7,
+-                has_gripper=True, control_hz=config.control_hz,
+-                action_spaces=({'joint_position': 14} if config.robot_type == 'yam' else
+-                               {'joint_position': 8, 'joint_velocity': 8, 'cartesian_position': 7}),
++                joint_count=joint_count, has_gripper=True, control_hz=config.control_hz,
++                action_spaces=action_spaces,
+             )
+         else:
+             robot = await robot_call(robot_factory, config)
+@@ -428,6 +430,9 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
+                             )
+                             if config.robot_type == 'yam':
+                                 print('YAM initialization enables position control; shutdown releases motor torque.')
++                            elif config.robot_type == 'so101':
++                                print('SO101 initialization enables motor torque; shutdown returns to the '
++                                      'start pose, then releases torque.')
+                             else:
+                                 print('RobotEnv initialization may reset the robot before any model action.')
+                             return yes_no('Confirm this physical trial may initialize the robot and start')
+diff --git a/src/colosseum_client/lerobot_export.py b/src/colosseum_client/lerobot_export.py
+index c82781c..bfe29b0 100644
+--- a/src/colosseum_client/lerobot_export.py
++++ b/src/colosseum_client/lerobot_export.py
+@@ -14,6 +14,11 @@ import pyarrow as pa
+ import pyarrow.parquet as pq
+ 
+ 
++# LeRobot's so101_follower feature names, so exports align with training datasets.
++SO101_NAMES = ("shoulder_pan.pos", "shoulder_lift.pos", "elbow_flex.pos",
++               "wrist_flex.pos", "wrist_roll.pos", "gripper.pos")
++
++
+ def _json(path, value):
+     path.parent.mkdir(parents=True, exist_ok=True)
+     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
+@@ -82,6 +87,9 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
+             raise ValueError("YAM recording requires 12 joints, 2 grippers and 14-D actions")
+         vectors["observation.state"] = [row['joints'][:6] + row['gripper'][:1]
+                                         + row['joints'][6:] + row['gripper'][1:] for row in rows]
++    if robot_type == "so101" and any(
++            len(row['joints']) != 5 or len(row['gripper']) != 1 or len(row['action']) != 6 for row in rows):
++        raise ValueError("SO101 recording requires 5 joints, 1 gripper and 6-D actions")
+     vectors = {key: np.asarray(values, dtype=np.float32) for key, values in vectors.items()}
+     capture = np.asarray([row["seconds"] for row in rows], dtype=np.float64)
+     if not np.isfinite(capture).all() or np.any(capture < 0) or np.any(np.diff(capture) <= 0):
+@@ -96,6 +104,10 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
+         context["state_action_order"] = "left_joint_1..6,left_gripper,right_joint_1..6,right_gripper"
+         context["state_action_units"] = "radians; grippers normalized 0 closed, 1 open"
+         context["cartesian_state_available"] = bool(cartesian[0].size)
++    if robot_type == "so101":
++        context["state_action_order"] = ",".join(SO101_NAMES)
++        context["state_action_units"] = "degrees; gripper opening 0 closed, 100 open"
++        context["cartesian_state_available"] = bool(cartesian[0].size)
+     signature = hashlib.sha256(raw + json.dumps(context, sort_keys=True).encode()).hexdigest()
+     destination = path / "lerobot"
+     if destination.exists():
+@@ -121,6 +133,8 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
+             if robot_type == "yam" and key in {"observation.state", "action"}:
+                 names = [name for side in ('left', 'right')
+                          for name in [*[f'{side}_joint_{i}' for i in range(1, 7)], f'{side}_gripper']]
++            if robot_type == "so101" and key in {"observation.state", "action"}:
++                names = list(SO101_NAMES)
+             features[key] = {"dtype": "float32", "shape": [array.shape[1]], "names": names}
+             columns[key] = pa.array(array.tolist(), type=pa.list_(pa.float32(), array.shape[1]))
+             stats[key] = _stats(array)
+diff --git a/src/colosseum_client/robots/__init__.py b/src/colosseum_client/robots/__init__.py
+index a021ff3..e59abcd 100644
+--- a/src/colosseum_client/robots/__init__.py
++++ b/src/colosseum_client/robots/__init__.py
+@@ -1 +1 @@
+-"""Robot drivers: Franka via DROID/R2D2 and YAM via I2RT; SO101/G1 are templates."""
++"""Robot drivers: Franka via DROID/R2D2, YAM via I2RT and SO101 via LeRobot; G1 is a template."""
+diff --git a/src/colosseum_client/robots/so101.py b/src/colosseum_client/robots/so101.py
+index c07c040..b976d5f 100644
+--- a/src/colosseum_client/robots/so101.py
++++ b/src/colosseum_client/robots/so101.py
+@@ -1,40 +1,195 @@
+-"""SO101 hardware adapter TODO; this is not an operational driver."""
++"""SO-ARM101 follower via LeRobot's Feetech driver, plus LeRobot cameras.
++
++Actions and state use LeRobot's so101_follower convention: shoulder_pan,
++shoulder_lift, elbow_flex, wrist_flex, wrist_roll in degrees, then the gripper
++opening in [0, 100]. Observations keep the five joints and the gripper separate.
++Close returns to the pose measured at start-up, then releases motor torque.
++"""
++import logging
++import time
++
+ import numpy as np
++from PIL import Image
+ 
+ from ..robot_interface import Robot, RobotObservation
+-from ..robot_config import RobotClientConfig
++
++log = logging.getLogger(__name__)
++JOINTS = ('shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll')
++MOTORS = (*JOINTS, 'gripper')
++GRIPPER_RANGE = (0.0, 100.0)
++_CAMERA_TYPES = ('realsense', 'opencv')
++_RETURN_HZ = 30
++
++
++def _vector(value, size, name):
++    result = np.asarray(value, dtype=np.float64)
++    if result.shape != (size,) or not np.isfinite(result).all():
++        raise ValueError(f'{name} must contain {size} finite values')
++    return result.copy()
++
++
++def _camera_type(camera_id, configured):
++    if configured is not None:
++        if configured not in _CAMERA_TYPES:
++            raise ValueError(f'camera_types values must be one of {_CAMERA_TYPES}')
++        return configured
++    # RealSense devices are addressed by their numeric serial; V4L2 by index or path.
++    return 'realsense' if camera_id.isdecimal() and len(camera_id) > 4 else 'opencv'
++
++
++def _open_follower(port, robot_id, calibration_dir, cameras, max_relative_target):
++    """cameras: role -> (type, id, width, height, fps). Returns a connected follower."""
++    try:
++        from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
++        from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
++        from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
++    except ImportError as exc:
++        raise RuntimeError('Install colosseum-client[so101] for LeRobot; see docs/so101.md') from exc
++    camera_configs = {}
++    for role, (kind, camera_id, width, height, fps) in cameras.items():
++        if kind == 'realsense':
++            camera_configs[role] = RealSenseCameraConfig(
++                serial_number_or_name=camera_id, width=width, height=height, fps=fps)
++        else:
++            camera_configs[role] = OpenCVCameraConfig(
++                index_or_path=int(camera_id) if camera_id.isdecimal() else camera_id,
++                width=width, height=height, fps=fps)
++    follower = SO101Follower(SO101FollowerConfig(
++        port=port, id=robot_id, calibration_dir=calibration_dir, cameras=camera_configs,
++        use_degrees=True, max_relative_target=max_relative_target))
++    try:
++        # Never start LeRobot's interactive calibration from an evaluation.
++        follower.connect(calibrate=False)
++        if not follower.is_calibrated:
++            raise RuntimeError(
++                f'SO101 {robot_id!r} is not calibrated; run lerobot-calibrate before evaluating')
++    except BaseException:
++        try:
++            follower.disconnect()
++        except Exception:
++            log.debug('SO101 cleanup after failed connection', exc_info=True)
++        raise
++    return follower
+ 
+ 
+ class SO101Robot(Robot):
+     robot_name = 'SO101'
+-    # TODO: Choose the servo SDK/port, load calibration, define joint order and
+-    # units, map gripper commands and camera roles.
+-
+-    # TODO: Set these from the actual controlled joints/end effectors and policy
+-    # contract. Do not infer them from the robot's total physical joint count.
+-    joint_count: int
+-    has_gripper: bool
+-    action_dim: int
+-    action_space_name: str
+-
+-    def __init__(self, config: RobotClientConfig) -> None:
+-        self.config = config
+-        self.settings = config.adapter_config
+-        # TODO: Validate settings and connect to the hardware on this thread.
+-        # Release any partially initialized resources if connection fails.
+-        raise NotImplementedError(f'{self.robot_name} hardware control is not implemented')
+-
+-    def get_observation(self) -> RobotObservation:
+-        # TODO: Return camera-role -> RGB uint8 HWC images, joint/gripper vectors,
+-        # and Cartesian state using the current RobotObservation schema.
+-        raise NotImplementedError(f'{self.robot_name}: TODO read real observations')
+-
+-    def execute(self, action: np.ndarray) -> None:
+-        # TODO: Validate shape, finite values, units, order and hardware limits;
+-        # map the policy command to the SDK. Implement bounded I/O and watchdogs.
+-        raise NotImplementedError(f'{self.robot_name}: TODO execute hardware action')
+-
+-    def close(self) -> None:
+-        # TODO: Safely stop/hold the robot and release SDK/camera resources.
+-        # Make cleanup safe to repeat, including after partial initialization.
+-        raise NotImplementedError(f'{self.robot_name}: TODO stop and release hardware')
++    joint_count = 5
++    has_gripper = True
++    action_dim = 6
++    action_space_name = 'joint_position'
++
++    def __init__(self, config):
++        settings = dict(config.adapter_config)
++        allowed = {'port', 'robot_id', 'calibration_dir', 'camera_types', 'camera_width',
++                   'camera_height', 'camera_fps', 'joint_low', 'joint_high',
++                   'max_relative_target', 'return_to_start', 'return_step_deg'}
++        if settings.keys() - allowed:
++            raise ValueError(f'Unknown SO101 settings: {sorted(settings.keys() - allowed)}')
++        port, robot_id = settings.get('port'), settings.get('robot_id')
++        if any(not isinstance(v, str) or not v.strip() for v in (port, robot_id)):
++            raise ValueError('SO101 requires port and robot_id (the LeRobot calibration id)')
++        calibration_dir = settings.get('calibration_dir')
++        if calibration_dir is not None and (not isinstance(calibration_dir, str) or not calibration_dir.strip()):
++            raise ValueError('calibration_dir must be a nonempty path')
++        self.low = _vector(settings.get('joint_low'), 5, 'joint_low')
++        self.high = _vector(settings.get('joint_high'), 5, 'joint_high')
++        if np.any(self.low >= self.high):
++            raise ValueError('SO101 requires joint_low < joint_high in degrees')
++        max_relative_target = settings.get('max_relative_target')
++        if max_relative_target is not None and (
++                type(max_relative_target) not in (int, float) or not 0 < max_relative_target <= 180):
++            raise ValueError('max_relative_target must be degrees in (0, 180]')
++        self.return_to_start = settings.get('return_to_start', True)
++        if type(self.return_to_start) is not bool:
++            raise ValueError('return_to_start must be true or false')
++        self.return_step = settings.get('return_step_deg', 1.5)
++        if type(self.return_step) not in (int, float) or not 0 < self.return_step <= 10:
++            raise ValueError('return_step_deg must be in (0, 10]')
++        sizes = [settings.get(name, default) for name, default in
++                 (('camera_width', 640), ('camera_height', 480), ('camera_fps', 30))]
++        if any(type(v) is not int or v <= 0 for v in sizes):
++            raise ValueError('camera_width, camera_height and camera_fps must be positive integers')
++        camera_types = settings.get('camera_types', {})
++        if not isinstance(camera_types, dict) or camera_types.keys() - set(config.cameras):
++            raise ValueError('camera_types must map configured camera roles to realsense or opencv')
++        if not config.cameras or len(set(config.cameras.values())) != len(config.cameras):
++            raise ValueError('SO101 requires distinct camera IDs')
++        cameras = {role: (_camera_type(camera_id, camera_types.get(role)), camera_id, *sizes)
++                   for role, camera_id in config.cameras.items()}
++        self.image_size = (config.image_width, config.image_height)
++        self.follower, self.start, self.closed = None, None, False
++        try:
++            self.follower = _open_follower(port, robot_id, calibration_dir, cameras, max_relative_target)
++            # The operator places the arm in its rest pose before each trial.
++            self.start = self._positions(self.follower.get_observation())
++        except BaseException:
++            try:
++                self.close()
++            except Exception:
++                log.exception('SO101 initialization cleanup failed')
++            raise
++
++    @staticmethod
++    def _positions(raw):
++        try:
++            values = [raw[f'{motor}.pos'] for motor in MOTORS]
++        except KeyError as exc:
++            raise ValueError(f'LeRobot observation is missing {exc.args[0]}') from exc
++        return _vector(values, 6, 'LeRobot motor position')
++
++    def _image(self, raw, role):
++        image = np.asarray(raw.get(role))
++        if image.dtype != np.uint8 or image.ndim != 3 or image.shape[2] != 3:
++            raise ValueError(f'SO101 camera {role} must return uint8 HWC RGB')
++        if (image.shape[1], image.shape[0]) != self.image_size:
++            image = np.asarray(Image.fromarray(image).resize(self.image_size, resample=Image.Resampling.LANCZOS))
++        return np.ascontiguousarray(image)
++
++    def get_observation(self):
++        if self.closed:
++            raise RuntimeError('SO101 is closed')
++        raw = self.follower.get_observation()
++        positions = self._positions(raw)
++        images = {role: self._image(raw, role) for role in self.follower.cameras}
++        return RobotObservation(images, positions[:5].astype(np.float32), positions[5:].astype(np.float32),
++                                np.empty(0, dtype=np.float32))  # FK is unavailable, not zero.
++
++    def _send(self, positions):
++        self.follower.send_action({f'{motor}.pos': float(v) for motor, v in zip(MOTORS, positions)})
++
++    def execute(self, action):
++        if self.closed:
++            raise RuntimeError('SO101 is closed')
++        value = _vector(action, 6, 'SO101 action')
++        # Learned policies routinely overshoot calibrated ends by a fraction of a
++        # degree; clamp to the configured range instead of aborting the trial.
++        value[:5] = np.clip(value[:5], self.low, self.high)
++        value[5] = np.clip(value[5], *GRIPPER_RANGE)
++        self._send(value)
++
++    def _return_to_start(self):
++        current = self._positions(self.follower.get_observation())
++        steps = int(np.ceil(np.max(np.abs(self.start - current)) / self.return_step))
++        for index in range(1, steps + 1):
++            self._send(current + (self.start - current) * index / steps)
++            time.sleep(1 / _RETURN_HZ)
++
++    def close(self):
++        if self.closed:
++            return
++        self.closed = True
++        if self.follower is None:
++            return
++        errors = []
++        if self.return_to_start and self.start is not None:
++            try:
++                self._return_to_start()
++            except Exception as exc:
++                errors.append(exc)
++        try:
++            self.follower.disconnect()
++        except Exception as exc:
++            errors.append(exc)
++        if errors:
++            raise RuntimeError('SO101 shutdown failed') from errors[0]
+diff --git a/tests/test_adapters.py b/tests/test_adapters.py
+index b5bb309..cb456fc 100644
+--- a/tests/test_adapters.py
++++ b/tests/test_adapters.py
+@@ -12,7 +12,7 @@ def config(**kwargs):
+     return RobotClientConfig(url='ws://localhost', token='test', cameras={'wrist': 'camera0'}, **kwargs)
+ 
+ 
+-@pytest.mark.parametrize('name', ['so101', 'g1'])
++@pytest.mark.parametrize('name', ['g1'])
+ def test_todo_adapters_fail_explicitly(name):
+     with pytest.raises(NotImplementedError, match='hardware control is not implemented'):
+         make_robot(config(robot_type=name))
+@@ -105,7 +105,7 @@ async def test_legacy_runner_does_not_fall_back_to_droid(settings):
+         await run_robot(config(**settings), 'test')
+ 
+ 
+-@pytest.mark.parametrize('name', ['so101', 'g1'])
++@pytest.mark.parametrize('name', ['g1'])
+ def test_shared_example_selects_todo_robot_without_opening_hardware(tmp_path, name):
+     example = Path(__file__).parents[1] / 'configs' / 'robot.yaml.example'
+     values = yaml.safe_load(example.read_text())
+diff --git a/tests/test_lerobot_export.py b/tests/test_lerobot_export.py
+index 6f0aa18..5a91b6f 100644
+--- a/tests/test_lerobot_export.py
++++ b/tests/test_lerobot_export.py
+@@ -129,3 +129,21 @@ def test_yam_export_preserves_bimanual_order_without_fabricating_fk(tmp_path):
+     assert info['features']['action']['names'][6] == 'left_gripper'
+     assert info['features']['action']['names'][13] == 'right_gripper'
+     assert json.loads((output / 'meta/colosseum.json').read_text())['cartesian_state_available'] is False
++
++
++def test_so101_export_uses_lerobot_motor_names_without_fabricating_fk(tmp_path):
++    recorder = TrialRecorder(tmp_path, ['head_image', 'left_image'])
++    obs = RobotObservation({c: np.zeros((24, 32, 3), np.uint8) for c in recorder.cameras},
++                           np.arange(5, dtype=np.float32), np.array([40.]), np.empty(0))
++    recorder.add(obs, np.arange(6) + .5)
++    recorder.close()
++    output = export_trial(tmp_path, recorder.cameras, fps=30, robot_type='so101', task='pick', metadata={})
++    info = json.loads((output / 'meta/info.json').read_text())
++    table = pq.read_table(output / 'data/chunk-000/file-000.parquet').to_pydict()
++    assert table['observation.state'][0] == [0, 1, 2, 3, 4, 40]
++    assert table['action'][0] == [.5, 1.5, 2.5, 3.5, 4.5, 5.5]
++    assert 'observation.cartesian_position' not in info['features']
++    names = ['shoulder_pan.pos', 'shoulder_lift.pos', 'elbow_flex.pos',
++             'wrist_flex.pos', 'wrist_roll.pos', 'gripper.pos']
++    assert info['features']['observation.state']['names'] == names == info['features']['action']['names']
++    assert 'degrees' in json.loads((output / 'meta/colosseum.json').read_text())['state_action_units']
+diff --git a/tests/test_local_compat_integration.py b/tests/test_local_compat_integration.py
+index c1f6f01..f749312 100644
+--- a/tests/test_local_compat_integration.py
++++ b/tests/test_local_compat_integration.py
+@@ -129,7 +129,7 @@ def test_local_policy_rejects_unsupported_hardware_before_adapter_construction(t
+         policy_server_url='ws://unused', recording=False,
+     )
+     assignment = {'inference_mode': 'local', 'task': {'instruction': 'test', 'cameras': [], 'max_steps': 1}}
+-    with pytest.raises(ValueError, match='franka or yam'):
++    with pytest.raises(ValueError, match='franka, yam or so101'):
+         asyncio.run(evaluation_module.run_trial(
+             config, assignment, {'id': 'run'}, tmp_path, None,
+             robot_factory=lambda *args, **kwargs: pytest.fail('adapter must not be constructed'),
+diff --git a/tests/test_so101.py b/tests/test_so101.py
+new file mode 100644
+index 0000000..3444e80
+--- /dev/null
++++ b/tests/test_so101.py
+@@ -0,0 +1,222 @@
++from dataclasses import replace
++
++import numpy as np
++import pytest
++
++from colosseum_client import RobotClientConfig, make_robot
++from colosseum_client.robots import so101
++
++
++def config(**settings):
++    return RobotClientConfig(url='ws://localhost', token='test', robot_type='so101', control_hz=30,
++        image_width=4, image_height=2,
++        cameras={'head_image': '123456789012', 'left_image': '/dev/video0'},
++        adapter_config={'port': '/dev/ttyACM0', 'robot_id': 'follower_arm',
++                        'joint_low': [-100, -100, -100, -100, -170],
++                        'joint_high': [100, 100, 100, 100, 170], **settings})
++
++
++@pytest.fixture
++def hardware(monkeypatch):
++    opened = []
++
++    class Follower:
++        def __init__(self, port, robot_id, calibration_dir, cameras, max_relative_target):
++            self.arguments = (port, robot_id, calibration_dir, max_relative_target)
++            self.cameras, self.commands, self.disconnected = cameras, [], 0
++            self.position = np.array([1., 2., 3., 4., 5., 40.])
++            opened.append(self)
++        def get_observation(self):
++            raw = {f'{motor}.pos': value for motor, value in zip(so101.MOTORS, self.position)}
++            for index, role in enumerate(self.cameras):
++                raw[role] = np.full((2, 4, 3), index + 1, np.uint8)
++            return raw
++        def send_action(self, action):
++            self.commands.append([action[f'{motor}.pos'] for motor in so101.MOTORS])
++            self.position = np.asarray(self.commands[-1])
++        def disconnect(self):
++            self.disconnected += 1
++
++    monkeypatch.setattr(so101, '_open_follower', Follower)
++    monkeypatch.setattr(so101.time, 'sleep', lambda _: None)
++    return opened
++
++
++def test_state_split_camera_types_and_action_order(hardware):
++    robot = make_robot(config(max_relative_target=20))
++    follower = hardware[0]
++    assert follower.arguments == ('/dev/ttyACM0', 'follower_arm', None, 20)
++    assert follower.cameras == {'head_image': ('realsense', '123456789012', 640, 480, 30),
++                                'left_image': ('opencv', '/dev/video0', 640, 480, 30)}
++    obs = robot.get_observation()
++    np.testing.assert_allclose(obs.joints, [1, 2, 3, 4, 5])
++    np.testing.assert_allclose(obs.gripper, [40])
++    assert obs.joints.dtype == obs.gripper.dtype == np.float32
++    assert obs.cartesian_position.size == 0
++    assert obs.images['head_image'].shape == (2, 4, 3) and obs.images['left_image'][0, 0, 0] == 2
++    robot.execute(np.array([6, 7, 8, 9, 10, 60], np.float32))
++    assert follower.commands == [[6, 7, 8, 9, 10, 60]]
++
++
++def test_action_is_clamped_to_configured_range(hardware):
++    robot = make_robot(config())
++    robot.execute([-100.4, 150, 0, 0, 171, 100.7])
++    assert hardware[0].commands == [[-100, 100, 0, 0, 170, 100]]
++    robot.execute([0, 0, 0, 0, 0, -3])
++    assert hardware[0].commands[-1][5] == 0
++
++
++@pytest.mark.parametrize('action', [np.zeros(5), np.zeros(7), [0, 0, float('nan'), 0, 0, 0],
++                                    [0, 0, 0, 0, 0, float('inf')]])
++def test_invalid_action_never_moves(hardware, action):
++    robot = make_robot(config())
++    with pytest.raises(ValueError, match='6 finite'):
++        robot.execute(action)
++    assert not hardware[0].commands
++
++
++def test_close_returns_to_start_in_bounded_steps_then_releases(hardware):
++    robot = make_robot(config(return_step_deg=2))
++    robot.execute([11, 2, 3, 4, 5, 40])
++    robot.close()
++    robot.close()
++    follower = hardware[0]
++    steps = np.asarray(follower.commands[1:])
++    assert len(steps) == 5 and np.max(np.abs(np.diff(steps[:, 0]))) <= 2 + 1e-9
++    np.testing.assert_allclose(steps[-1], [1, 2, 3, 4, 5, 40])
++    assert follower.disconnected == 1
++    with pytest.raises(RuntimeError, match='closed'):
++        robot.get_observation()
++    with pytest.raises(RuntimeError, match='closed'):
++        robot.execute(np.zeros(6))
++
++
++def test_return_to_start_can_be_disabled(hardware):
++    robot = make_robot(config(return_to_start=False))
++    robot.execute([11, 2, 3, 4, 5, 40])
++    robot.close()
++    assert len(hardware[0].commands) == 1 and hardware[0].disconnected == 1
++
++
++def test_failed_return_still_releases_and_is_reported(hardware):
++    robot = make_robot(config())
++    robot.execute([11, 2, 3, 4, 5, 40])
++    def fail(_):
++        raise RuntimeError('bus lost')
++    hardware[0].send_action = fail
++    with pytest.raises(RuntimeError, match='SO101 shutdown failed'):
++        robot.close()
++    assert hardware[0].disconnected == 1
++
++
++def test_images_are_resized_to_the_configured_size(hardware):
++    robot = make_robot(replace(config(), image_width=2, image_height=1))
++    assert robot.get_observation().images['left_image'].shape == (1, 2, 3)
++
++
++@pytest.mark.parametrize('settings,match', [
++    ({'port': ''}, 'port and robot_id'),
++    ({'robot_id': None}, 'port and robot_id'),
++    ({'joint_low': None}, 'joint_low'),
++    ({'joint_high': [1, 2, 3]}, 'joint_high'),
++    ({'joint_low': [100] * 5}, 'joint_low < joint_high'),
++    ({'max_relative_target': 0}, 'max_relative_target'),
++    ({'return_to_start': 'yes'}, 'return_to_start'),
++    ({'return_step_deg': 50}, 'return_step_deg'),
++    ({'camera_fps': 0}, 'positive integers'),
++    ({'camera_types': {'left_image': 'zed'}}, 'camera_types'),
++    ({'camera_types': {'right_image': 'opencv'}}, 'camera_types'),
++    ({'baudrate': 1}, 'Unknown SO101 settings'),
++])
++def test_invalid_settings_open_nothing(hardware, settings, match):
++    with pytest.raises(ValueError, match=match):
++        make_robot(config(**settings))
++    assert hardware == []
++
++
++def test_duplicate_cameras_open_nothing(hardware):
++    with pytest.raises(ValueError, match='distinct camera'):
++        make_robot(replace(config(), cameras={'head_image': '0', 'left_image': '0'}))
++    assert hardware == []
++
++
++def test_camera_type_can_be_set_explicitly(hardware):
++    make_robot(config(camera_types={'head_image': 'opencv'})).close()
++    assert hardware[0].cameras['head_image'][0] == 'opencv'
++
++
++def test_malformed_driver_state_is_not_padded_and_releases(hardware, monkeypatch):
++    factory = so101._open_follower
++    def broken(*args):
++        follower = factory(*args)
++        follower.get_observation = lambda: {'shoulder_pan.pos': 0.0}
++        return follower
++    monkeypatch.setattr(so101, '_open_follower', broken)
++    with pytest.raises(ValueError, match='missing shoulder_lift.pos'):
++        make_robot(config())
++    assert hardware[0].disconnected == 1 and not hardware[0].commands
++
++
++def test_missing_lerobot_is_reported_before_opening_hardware(monkeypatch):
++    import builtins
++    original = builtins.__import__
++    def blocked(name, *args, **kwargs):
++        if name.startswith('lerobot'):
++            raise ImportError(name)
++        return original(name, *args, **kwargs)
++    monkeypatch.setattr(builtins, '__import__', blocked)
++    with pytest.raises(RuntimeError, match=r'colosseum-client\[so101\]'):
++        make_robot(config())
++
++
++def test_synthetic_so101_uses_same_split_without_loading_hardware(monkeypatch):
++    def fail(*_):
++        raise AssertionError('Hardware must not load in test mode')
++    monkeypatch.setattr(so101, '_open_follower', fail)
++    robot = make_robot(replace(config(), test=True))
++    robot.configure_model({'action_dim': 6, 'action_space': 'joint_position'})
++    assert robot.get_observation().joints.shape == (5,)
++    robot.execute(np.r_[np.arange(5), 60.])
++    obs = robot.get_observation()
++    np.testing.assert_array_equal(obs.joints, np.arange(5))
++    np.testing.assert_array_equal(obs.gripper, [60])
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('execute_action', [False, True])
++async def test_local_trial_so101_contract_and_hardware_open_after_confirmation(tmp_path, monkeypatch, hardware, execute_action):
++    from types import SimpleNamespace
++    from colosseum_client import evaluation, local_policy
++    from colosseum_client import colosseum_pb2 as pb
++    from colosseum_client.tensors import tensor_from_numpy
++    events = []
++    class Client:
++        def __init__(self, config, *args, **kwargs):
++            assert kwargs['joint_count'] == 5
++            assert kwargs['action_spaces'] == {'joint_position': 6}
++            self.model = {'action_space': 'joint_position', 'action_dim': 6}
++        async def connect(self, **kwargs):
++            assert not hardware
++            assert kwargs['before_start'](self.model, {}) is True
++            return SimpleNamespace(action_spaces=['joint_position'])
++        async def infer(self, obs, **kwargs):
++            assert list(obs.state['joint_position'].shape) == [5]
++            assert list(obs.state['gripper_position'].shape) == [1]
++            return pb.ActionPlan(start_step=0, valid_until_step=0, control_hz=30,
++                                 actions=tensor_from_numpy(hardware[0].position.astype(np.float32)[None]))
++        async def before_action(self, step):
++            pass
++        async def finish(self):
++            events.append('finish')
++        async def close(self):
++            events.append('close')
++    monkeypatch.setattr(local_policy, 'LocalPolicyClient', Client)
++    def confirm(*_):
++        events.append('confirm')
++        return True
++    await evaluation.run_trial(replace(config(), recording=False), {'inference_mode': 'local', 'task': {
++        'instruction': 'pick', 'cameras': ['head_image', 'left_image'], 'max_steps': 1}},
++        {'id': 'so101-run'}, tmp_path, SimpleNamespace(), execute_action=execute_action, confirm_live=confirm)
++    assert events == ['confirm', 'finish', 'close']
++    assert hardware[0].disconnected == 1
++    assert len(hardware[0].commands) == int(execute_action)
+-- 
+2.43.0
+

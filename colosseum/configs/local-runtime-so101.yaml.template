@@ -1,0 +1,52 @@
+# Machine config for the three SO101 Open-track models. Generate the real file with:
+#   sed "s#__ROOT__#$PWD#g" colosseum/configs/local-runtime-so101.yaml.template > colosseum-policy-server/configs/local-runtime-so101.yaml
+# Identity, revision and action contract must equal the Router registration (see tools/router_check.py).
+host: 127.0.0.1
+port: 8000
+log_dir: __ROOT__/outputs/colosseum/policy-logs
+start_timeout_seconds: 600
+backend:
+  name: vla
+  options:
+    external_sensor: head_image
+    wrist_sensor: left_image
+    http_timeout_seconds: 60
+models:
+  # Identity, revision and action contract must match the Router registration.
+  - name: molmoact2-so101
+    url: https://huggingface.co/allenai/MolmoAct2-SO100_101
+    revision: "152569fe57914d97be91055800035f54e250d009"
+    action_space: joint_position
+    action_dim: 6
+    control_hz: 30
+    max_horizon: 30
+    endpoint: http://127.0.0.1:9201
+    backend_options: {robot_type: so101, adapter: molmoact2_so101, num_steps: 10}
+    launcher: [__ROOT__/envs/.venv/bin/python, -m, colosseum_policy_server.model_service,
+               molmoact2, --robot-type, so101, --checkpoint, __ROOT__/checkpoints/MolmoAct2-SO100_101,
+               --device, "cuda:0", --dtype, bfloat16, --port, "9201"]
+  - name: pi05-so101
+    url: https://huggingface.co/hqfang/pi05-so100_101
+    revision: "d3204e03ae84d232e2493a933fd460515904eb58"
+    action_space: joint_position
+    action_dim: 6
+    control_hz: 30
+    max_horizon: 50
+    endpoint: http://127.0.0.1:9212
+    backend_options: {robot_type: so101, adapter: pi05_so101, num_steps: 10}
+    launcher: [__ROOT__/envs/pi05_so101/.venv/bin/python, -m, colosseum_policy_server.model_service,
+               pi05_lerobot, --robot-type, so101, --checkpoint, __ROOT__/checkpoints/pi05-so100_101,
+               --device, cuda, --port, "9212"]
+  - name: g05-so101
+    url: https://huggingface.co/OpenGalaxea/G05
+    revision: "e312be81e90c56a55bcb26b57429bd39a335b449"
+    action_space: joint_position
+    action_dim: 6
+    control_hz: 30
+    max_horizon: 30
+    endpoint: ws://127.0.0.1:9204
+    backend_options: {robot_type: so101, adapter: g05_so101}
+    launcher: [__ROOT__/vendor/GalaxeaVLA/.venv/bin/python, -m, colosseum_policy_server.model_service,
+               g05, --robot-type, so101, --source-root, __ROOT__/vendor/GalaxeaVLA,
+               --checkpoint, __ROOT__/checkpoints/G05/g05-so101/checkpoints/model_state_dict.pt,
+               --device, cuda, --action-steps, "30", --port, "9204"]

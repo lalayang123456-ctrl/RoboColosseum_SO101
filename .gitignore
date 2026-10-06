@@ -24,3 +24,8 @@ __pycache__/
 
 # Contains local tokens
 /command.md
+
+# Patched LeRobot clone for the pi0.5 SO100/101 checkpoint; recreate it, see colosseum/README.md
+/vendor/lerobot-pi05-so100_101/
+# Dedicated pi0.5 environment
+/envs/pi05_so101/

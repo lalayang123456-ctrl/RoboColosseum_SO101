@@ -1,0 +1,28 @@
+# Copy to colosseum-client/configs/robot.so101.yaml (git-ignored there), fill in the
+# UPPER_CASE placeholders, then: chmod 600 colosseum-client/configs/robot.so101.yaml
+router_url: wss://191.222.219.43
+token: CLIENT_TOKEN                 # clt_..., from the Colosseum admin
+institution: INSTITUTION            # exactly as bound to the token, e.g. NUS
+robot_type: so101
+track: 1                            # 1 = Open, 2 = Fine-tuning
+# Open Track: leave scene/instruction empty to be prompted at start-up.
+scene: ""
+evaluator: ""
+policy_server_url: ws://127.0.0.1:8000
+control_hz: 30                      # the Router registers the SO101 models at 30 Hz
+image_width: 640
+image_height: 480
+cameras:
+  head_image: "REALSENSE_SERIAL"    # top/external camera; numeric serial => RealSense
+  left_image: /dev/v4l/by-id/WRIST_CAMERA-video-index0   # wrist camera; path/index => OpenCV
+adapter_config:
+  port: /dev/serial/by-id/FOLLOWER_ARM_PORT
+  robot_id: follower_arm            # LeRobot calibration id
+  # From: python3 colosseum/tools/joint_limits.py <calibration json>
+  joint_low: [J1, J2, J3, J4, J5]
+  joint_high: [J1, J2, J3, J4, J5]
+  return_to_start: true
+recording: true
+skip_upload: false
+max_trial_steps: 800
+test: false
