@@ -29,3 +29,9 @@ __pycache__/
 /vendor/lerobot-pi05-so100_101/
 # Dedicated pi0.5 environment
 /envs/pi05_so101/
+
+# Contains API keys
+/running_command.md
+
+# Claude Code CLI installed from claude-agent-sdk (colosseum/README.md, section 3.7)
+/envs/claude-cli/

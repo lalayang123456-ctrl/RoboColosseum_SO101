@@ -28,7 +28,7 @@ from lerobot.robots.so_follower import SO101FollowerConfig, SOFollower
 JOINT_ORDER = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 
 DEFAULT_CHECKPOINT = "checkpoints/MolmoAct2-SO100_101"
-DEFAULT_ARM_PORT = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B8E114717-if00"
+DEFAULT_ARM_PORT = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B79017804-if00"
 DEFAULT_FRONT_SERIAL = "262522073381"
 DEFAULT_WRIST_INDEX = 4
 

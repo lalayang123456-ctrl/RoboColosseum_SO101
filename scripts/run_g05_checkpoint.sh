@@ -19,7 +19,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-CHECKPOINT="${CHECKPOINT:-checkpoints/g05-so101-stack-white_bowls-100episodes}"
+CHECKPOINT="${CHECKPOINT:-checkpoints/g05-so101-stack-bowls-10ep/checkpoints/step_014930}"
 TASK="${TASK:-Pick up the white plastic bowl on the right and stack it on top of the white plastic bowl on the left.}"
 DURATION="${DURATION:-30}"            # seconds per run; 0 = run until you press Enter
 DRY_RUN="${DRY_RUN:-0}"

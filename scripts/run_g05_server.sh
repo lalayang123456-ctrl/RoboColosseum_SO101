@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 REPO="$PWD"
 
-CHECKPOINT="${CHECKPOINT:-checkpoints/g05-so101-stack-white_bowls-100episodes}"
+CHECKPOINT="${CHECKPOINT:-checkpoints/g05-so101-stack-bowls-10ep/checkpoints/step_014930}"
 PORT="${PORT:-8765}"
 # Steps executed per inference (model horizon is 32 steps @ 30 fps).
 ACTION_STEPS="${ACTION_STEPS:-32}"

@@ -1,4 +1,5 @@
-# Machine config for the three SO101 Open-track models. Generate the real file with:
+# Machine config for the five SO101 Open-track VLA models only (no LLMs; for the full Open track
+# use local-runtime-so101-mixed-joint.yaml.template). Generate the real file with:
 #   sed "s#__ROOT__#$PWD#g" colosseum/configs/local-runtime-so101.yaml.template > colosseum-policy-server/configs/local-runtime-so101.yaml
 # Identity, revision and action contract must equal the Router registration (see tools/router_check.py).
 host: 127.0.0.1
@@ -50,3 +51,33 @@ models:
                g05, --robot-type, so101, --source-root, __ROOT__/vendor/GalaxeaVLA,
                --checkpoint, __ROOT__/checkpoints/G05/g05-so101/checkpoints/model_state_dict.pt,
                --device, cuda, --action-steps, "30", --port, "9204"]
+  # max_horizon is the model's chunk length; confirm it against the Router registration.
+  - name: groot-n17-so101
+    url: https://huggingface.co/hqfang/groot-so100_101
+    revision: "f5e17af8948a647e4c23186a27927bf73d6d784e"
+    action_space: joint_position
+    action_dim: 6
+    control_hz: 30
+    max_horizon: 40
+    endpoint: http://127.0.0.1:9217
+    backend_options: {robot_type: so101, adapter: groot_so101}
+    launcher: [__ROOT__/envs/.venv/bin/python, -m, colosseum_policy_server.model_service,
+               groot_n17, --robot-type, so101, --checkpoint, __ROOT__/checkpoints/groot-so100_101,
+               --base-model, __ROOT__/checkpoints/GR00T-N1.7-3B, --device, cuda, --port, "9217"]
+  # LingBot VLA v2 fine-tuned on the MolmoAct2 SO100/101 data (not a Molmo model).
+  # Needs its own torch 2.8 env; flash-attn is not installed, so attention uses SDPA.
+  - name: lingbot-molmoact2-so101
+    url: https://huggingface.co/RoboColosseum/LingBot-MolmoAct2-So101
+    revision: "d360710b21beec2804e42ac2d6035022c2a4c1a8"
+    action_space: joint_position
+    action_dim: 6
+    control_hz: 30
+    max_horizon: 50
+    endpoint: http://127.0.0.1:9218
+    backend_options: {robot_type: so101, adapter: lingbot_so101}
+    launcher: [/usr/bin/env, LINGBOT_ATTN_IMPL=sdpa, PYTHONNOUSERSITE=1,
+               "C_INCLUDE_PATH=__ROOT__/envs/pyheaders/usr/include:__ROOT__/envs/pyheaders/usr/include/python3.12:__ROOT__/envs/pyheaders/usr/include/x86_64-linux-gnu/python3.12",
+               __ROOT__/envs/.venv-lingbot/bin/python, -m, colosseum_policy_server.model_service,
+               lingbot_v2, --robot-type, so101, --checkpoint, __ROOT__/checkpoints/LingBot-MolmoAct2-So101,
+               --source-root, __ROOT__/vendor/lingbot-vla-v2,
+               --processor, __ROOT__/checkpoints/Qwen3-VL-4B-Instruct, --device, cuda, --port, "9218"]

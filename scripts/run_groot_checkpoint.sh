@@ -23,7 +23,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-ARM_PORT="${ARM_PORT:-/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B8E114717-if00}"
+ARM_PORT="${ARM_PORT:-/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B79017804-if00}"
 ROBOT_ID="${ROBOT_ID:-follower_arm}"
 
 FRONT_CAM_TYPE="intelrealsense"
@@ -42,7 +42,7 @@ DURATION="${DURATION:-30}"
 FPS="${FPS:-30}"
 DISPLAY_DATA="${DISPLAY_DATA:-false}"
 
-CHECKPOINT="${CHECKPOINT:-checkpoints/groot-n17-so101-stack-white_bowls-100episodes}"
+CHECKPOINT="${CHECKPOINT:-checkpoints/groot-n17-so101-stack-bowls-40k/checkpoints/040000/pretrained_model}"
 VENV_PY="envs/.venv/bin/python"
 
 # How many actions of each predicted chunk to execute before switching to the next one.

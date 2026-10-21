@@ -44,9 +44,9 @@ REPO = Path(__file__).resolve().parent.parent
 GALAXEA = REPO / "vendor" / "GalaxeaVLA"
 CLIENT_PATH = GALAXEA / "experiments" / "so100" / "so100_policy_client.py"
 
-DEFAULT_CHECKPOINT = "checkpoints/g05-so101-stack-white_bowls-100episodes"
+DEFAULT_CHECKPOINT = "checkpoints/g05-so101-stack-bowls-10ep/checkpoints/step_014930"
 DEFAULT_ARGS = {
-    "--robot-port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B8E114717-if00",
+    "--robot-port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B79017804-if00",
     "--robot-id": "follower_arm",
     "--camera-index": [
         "exterior:rs:262522073381",

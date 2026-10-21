@@ -24,7 +24,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 BY_ID=/dev/serial/by-id
-FOLLOWER_PORT="${FOLLOWER_PORT:-$BY_ID/usb-1a86_USB_Single_Serial_5B8E114717-if00}"
+FOLLOWER_PORT="${FOLLOWER_PORT:-$BY_ID/usb-1a86_USB_Single_Serial_5B79017804-if00}"
 LEADER_PORT="${LEADER_PORT:-$BY_ID/usb-1a86_USB_Single_Serial_5B79016937-if00}"
 FOLLOWER_ID="${FOLLOWER_ID:-follower_arm}"
 LEADER_ID="${LEADER_ID:-leader_arm}"
@@ -34,7 +34,9 @@ VENV_PY="envs/.venv/bin/python"
 
 for dev in "$FOLLOWER_PORT" "$LEADER_PORT"; do
   if [ ! -e "$dev" ]; then
-    echo "ERROR: $dev does not exist." >&2
+    echo "ERROR: $dev does not exist (is that arm plugged in and powered?)." >&2
+    echo "Serial ports currently connected:" >&2
+    ls -1 "$BY_ID" 2>/dev/null | sed 's/^/  /' >&2 || echo "  (none)" >&2
     exit 1
   fi
 done

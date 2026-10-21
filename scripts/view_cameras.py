@@ -16,8 +16,12 @@ cv2.imshow has no GUI backend here.
 Only one process can hold a camera at a time -- close this before recording.
 To watch the cameras *while* recording, use record_dataset.py --display-data.
 
+The second camera can also be a RealSense (e.g. a fixed side camera): pass its numeric
+serial to --wrist and it is opened through pyrealsense2 and shown as "side".
+
 Usage: envs/.venv/bin/python scripts/view_cameras.py
        envs/.venv/bin/python scripts/view_cameras.py --front-serial 262522073381 --wrist /dev/video0
+       envs/.venv/bin/python scripts/view_cameras.py --wrist 262522073375      # top + side RealSense
 """
 
 import argparse
@@ -36,7 +40,8 @@ DEFAULT_WRIST_CAM = "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_U
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--front-serial", default="262522073381")
-parser.add_argument("--wrist", default=DEFAULT_WRIST_CAM, help="device path or OpenCV index")
+parser.add_argument("--wrist", default=DEFAULT_WRIST_CAM,
+                    help="second camera: device path, OpenCV index, or a RealSense serial (long number)")
 parser.add_argument("--width", type=int, default=640)
 parser.add_argument("--height", type=int, default=480)
 args = parser.parse_args()
@@ -46,20 +51,29 @@ front_cam = RealSenseCamera(
         serial_number_or_name=args.front_serial, width=args.width, height=args.height, fps=30
     )
 )
-wrist_cam = OpenCVCamera(
-    OpenCVCameraConfig(
-        index_or_path=int(args.wrist) if args.wrist.isdigit() else Path(args.wrist),
-        width=args.width,
-        height=args.height,
-        fps=30,
+# A RealSense is addressed by its numeric serial; anything else is a V4L2 index or path.
+second_is_realsense = args.wrist.isdigit() and len(args.wrist) > 4
+second_name = "side" if second_is_realsense else "wrist"
+if second_is_realsense:
+    wrist_cam = RealSenseCamera(
+        RealSenseCameraConfig(serial_number_or_name=args.wrist, width=args.width, height=args.height, fps=30)
     )
-)
+else:
+    wrist_cam = OpenCVCamera(
+        OpenCVCameraConfig(
+            index_or_path=int(args.wrist) if args.wrist.isdigit() else Path(args.wrist),
+            width=args.width,
+            height=args.height,
+            fps=30,
+        )
+    )
 
 # The viewer binary lives in the venv's bin/, which isn't on PATH unless the venv is activated.
 os.environ["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}{os.environ.get('PATH', '')}"
 rr.init("so101_cameras", spawn=True)
 rr.send_blueprint(
-    rrb.Horizontal(rrb.Spatial2DView(origin="front", name="front"), rrb.Spatial2DView(origin="wrist", name="wrist"))
+    rrb.Horizontal(rrb.Spatial2DView(origin="front", name="front"),
+                   rrb.Spatial2DView(origin=second_name, name=second_name))
 )
 
 front_cam.connect()
@@ -75,7 +89,7 @@ try:
         t0 = time.perf_counter()
         # Both lerobot cameras return RGB, which is what Rerun expects.
         rr.log("front", rr.Image(front_cam.read()).compress(jpeg_quality=85))
-        rr.log("wrist", rr.Image(wrist_cam.read()).compress(jpeg_quality=85))
+        rr.log(second_name, rr.Image(wrist_cam.read()).compress(jpeg_quality=85))
         time.sleep(max(0.0, 1 / 30 - (time.perf_counter() - t0)))
 except KeyboardInterrupt:
     pass

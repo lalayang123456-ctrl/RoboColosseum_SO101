@@ -21,8 +21,8 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-CHECKPOINT="${CHECKPOINT:-checkpoints/lingbot-vla-v2-6b-so101-stack-white_bowls-100episodes/checkpoints/global_step_2340/hf_ckpt}"
-NORM="${NORM:-configs/lingbot/norm_stats/so101_stack_white_bowls.json}"
+CHECKPOINT="${CHECKPOINT:-checkpoints/lingbot-vla-v2-6b-so101-stack-bowls-10ep/checkpoints/global_step_15680/hf_ckpt}"
+NORM="${NORM:-configs/lingbot/norm_stats/so101_stack_bowls.json}"
 TASK="${TASK:-Pick up the white plastic bowl on the right and stack it on top of the white plastic bowl on the left.}"
 DURATION="${DURATION:-30}"            # seconds per run; 0 = run until you press Enter
 PORT="${PORT:-8006}"

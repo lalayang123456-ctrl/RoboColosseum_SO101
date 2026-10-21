@@ -2,6 +2,9 @@
 
 Workspace for running policy checkpoints and real-robot evaluation.
 
+**Setting this up on a new machine for the Colosseum SO101 Open track (5 VLAs + 3 LLMs):
+follow [colosseum/README.md](colosseum/README.md).**
+
 ## Layout
 
 - `checkpoints/` — downloaded or locally-trained policy checkpoints, one subfolder per checkpoint (matches its Hugging Face repo name). Each contains `config.json`, `model.safetensors`, pre/postprocessor files, and `train_config.json`.

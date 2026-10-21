@@ -16,10 +16,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT/vendor/lingbot-vla-v2"
 
 PORT="${PORT:-8006}"
-CKPT="${CKPT:-$ROOT/checkpoints/lingbot-vla-v2-6b-so101-stack-white_bowls-100episodes/checkpoints/global_step_2340/hf_ckpt}"
+CKPT="${CKPT:-$ROOT/checkpoints/lingbot-vla-v2-6b-so101-stack-bowls-10ep/checkpoints/global_step_15680/hf_ckpt}"
 # Norm stats must come from the checkpoint's own training dataset
 # (scripts/compute_lingbot_norm_stats.py --dataset-root ... --out ...).
-NORM="${NORM:-$ROOT/configs/lingbot/norm_stats/so101_stack_white_bowls.json}"
+NORM="${NORM:-$ROOT/configs/lingbot/norm_stats/so101_stack_bowls.json}"
 # Relative paths are relative to the repo root (this script cd's into vendor/ above).
 case "$CKPT" in /*) ;; *) CKPT="$ROOT/$CKPT" ;; esac
 case "$NORM" in /*) ;; *) NORM="$ROOT/$NORM" ;; esac

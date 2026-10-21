@@ -13,9 +13,13 @@ is used up, so the arm keeps moving at the control rate:
 
 This only works when inference takes less than half a chunk: the entries that are still in
 the future when a chunk arrives must last until the next one arrives. MolmoAct2 (~0.4 s for
-30 steps) and pi0.5 (~0.6 s for 50 steps) qualify. G05 (~0.8 s for 32 steps = 24 of 32 steps
-already past on arrival) does not, so for it the script waits at the end of each chunk for a
-chunk computed from a fresh observation, like run_open_model.py, and says so.
+30 steps) and pi0.5 (~0.6 s for 50 steps) qualify at 30 Hz. G05 (~0.8 s) qualifies at its
+upstream 15 Hz (12 of 32 steps past on arrival) but not at 30 Hz (24 of 32); when it does not
+fit, the script waits at the end of each chunk for a chunk computed from a fresh observation,
+like run_open_model.py, and says so.
+
+G05 defaults follow its upstream SO100 deployment (15 Hz, bfloat16, at most 10 deg per tick,
+start from the upstream home pose); see run_open_model.py for the options that change this.
 
 Standalone: no Router, no recording, no scoring.
 
@@ -37,14 +41,16 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from run_open_model import MODELS, REPO, enter_pressed, infer, infer_g05, start_worker  # noqa: E402
+from run_open_model import (MODELS, REPO, add_execution_arguments, enter_pressed, infer, infer_g05,  # noqa: E402
+                            limit_step, measured, prepare_start, resolve_execution, start_worker)
 
 # Starting guess for inference latency in seconds; replaced by measurements during the trial.
-LATENCY = {'pi05': 0.7, 'molmoact2': 0.4, 'g05': 0.9}
+LATENCY = {'pi05': 0.7, 'molmoact2': 0.4, 'g05': 0.9, 'groot': 0.2}
 MARGIN_STEPS = 2
 
 
-def run_trial(robot, name, port, task, *, duration, hz, replan_steps, execute, pool, infer_chunk):
+def run_trial(robot, name, port, task, *, duration, hz, replan_steps, execute, pool, infer_chunk,
+              max_step_deg=0, g05_frequency=15, max_steps=800):
     np.set_printoptions(precision=1, suppress=True, linewidth=200)
     period = 1 / hz
 
@@ -56,21 +62,22 @@ def run_trial(robot, name, port, task, *, duration, hz, replan_steps, execute, p
         sent = time.monotonic()
 
         def work():
-            return infer_chunk(name, port, *images, state, task, hz), time.monotonic() - sent
+            return infer_chunk(name, port, *images, state, task, g05_frequency), time.monotonic() - sent
         return step, state, pool.submit(work), overlapping
 
     print('Computing the first chunk (the arm holds still)...', flush=True)
     _, first, future, _ = request(0)
     plan, took = future.result()
     base, latency = 0, max(LATENCY[name], 0.0)  # the first call can include warm-up; do not learn from it
-    print(f'First chunk in {took:.2f}s. Running "{task}" for up to {duration:.0f} s. Press Enter to stop.', flush=True)
+    limit = f'{max_steps} steps' + (f' or {duration:.0f} s' if duration else '')
+    print(f'First chunk in {took:.2f}s. Running "{task}" for up to {limit}. Press Enter to stop.', flush=True)
 
     step, pending, last, warned = 0, None, None, False
     held = switches = dropped = 0
     moved, latencies = np.zeros(6), []
     start = time.monotonic()
     try:
-        while time.monotonic() - start < duration and not enter_pressed():
+        while step < max_steps and not (duration and time.monotonic() - start >= duration) and not enter_pressed():
             tick = time.monotonic()
             if pending is not None and pending[2].done():
                 new_base, state, done, overlapping = pending
@@ -84,7 +91,7 @@ def run_trial(robot, name, port, task, *, duration, hz, replan_steps, execute, p
                 if step - new_base < len(new_plan):
                     plan, base = new_plan, new_base
                     switches += 1
-                    print(f't={tick - start:5.1f}s  state {state}  ->  chunk end {plan[-1]}  '
+                    print(f'step {step:4d}  state {state}  ->  chunk end {plan[-1]}  '
                           f'(inference {took:.2f}s, resumed at entry {step - base}/{len(plan)})', flush=True)
                 else:
                     dropped += 1  # arrived after every step it covers had passed
@@ -106,7 +113,7 @@ def run_trial(robot, name, port, task, *, duration, hz, replan_steps, execute, p
             else:
                 held += 1  # hold the last target until the next chunk arrives
             if execute and last is not None:
-                robot.execute(last)
+                robot.execute(limit_step(last, measured(robot), max_step_deg) if max_step_deg else last)
             step += 1
             time.sleep(max(0, period - (time.monotonic() - tick)))
     finally:
@@ -117,9 +124,9 @@ def run_trial(robot, name, port, task, *, duration, hz, replan_steps, execute, p
                 dropped=dropped, latency=float(np.mean(latencies)) if latencies else took, moved=moved)
 
 
-def infer_chunk(name, port, external, wrist, state, task, hz):
+def infer_chunk(name, port, external, wrist, state, task, g05_frequency):
     if name == 'g05':
-        return infer_g05(port, external, wrist, state, task, hz, MODELS[name]['chunk'])
+        return infer_g05(port, external, wrist, state, task, g05_frequency, MODELS[name]['chunk'])
     return infer(port, external, wrist, state, task)
 
 
@@ -128,15 +135,24 @@ def main():
     parser.add_argument('--model', choices=sorted(MODELS), default='pi05')
     parser.add_argument('--config', default=str(REPO / 'colosseum-client/configs/robot.so101.yaml'),
                         help='Colosseum robot config; only its arm and camera settings are used')
-    parser.add_argument('--duration', type=float, default=30, help='seconds per trial')
-    parser.add_argument('--hz', type=float, default=30, help='action execution rate')
-    parser.add_argument('--replan-steps', type=int, default=30,
-                        help='switch to a fresh chunk after about this many steps of the current one')
+    parser.add_argument('--max-steps', type=int, default=800,
+                        help='stop a trial after this many executed steps (default 800, like the Colosseum Open track)')
+    parser.add_argument('--duration', type=float, default=0,
+                        help='optional wall-clock limit per trial in seconds; 0 = no time limit (default)')
+    parser.add_argument('--replan-steps', type=int,
+                        help='switch to a fresh chunk after about this many steps of the current one '
+                             '(default: 32 for g05, 30 otherwise)')
+    add_execution_arguments(parser)
     parser.add_argument('--dry-run', action='store_true', help='read the robot and print chunks without executing them')
     args = parser.parse_args()
     model = MODELS[args.model]
-    if not 1 <= args.replan_steps <= model['chunk']:
+    run = resolve_execution(args, args.model, 'replan_steps')
+    if not 1 <= run['chunk_steps'] <= model['chunk']:
         parser.error(f'--replan-steps must be in [1, {model["chunk"]}] for {args.model}')
+    print(f'{args.model}: {run["hz"]:g} Hz, replan after {run["chunk_steps"]} steps, '
+          f'max step {run["max_step_deg"] or "off"}, start pose {run["home"]}'
+          + (f', {"float32" if args.g05_fp32 else "bfloat16"}, frequency input {args.g05_frequency:g}'
+             if args.model == 'g05' else ''))
 
     from colosseum_client import RobotClientConfig, make_robot
     config = RobotClientConfig.from_yaml(args.config)
@@ -145,7 +161,7 @@ def main():
     log = REPO / 'outputs/colosseum' / f'{args.model}-standalone.log'
     log.parent.mkdir(parents=True, exist_ok=True)
     # G05's server must serve its whole chunk so later entries are available after the latency.
-    worker = start_worker(args.model, log, model['chunk'])
+    worker = start_worker(args.model, log, model['chunk'], args.g05_fp32)
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
             while True:
@@ -155,9 +171,11 @@ def main():
                     break
                 robot = make_robot(config)  # enables torque at the current pose
                 try:
-                    r = run_trial(robot, args.model, model['port'], task, duration=args.duration, hz=args.hz,
-                                  replan_steps=args.replan_steps, execute=not args.dry_run, pool=pool,
-                                  infer_chunk=infer_chunk)
+                    prepare_start(robot, run['home'], not args.dry_run)
+                    r = run_trial(robot, args.model, model['port'], task, duration=args.duration, hz=run['hz'],
+                                  replan_steps=run['chunk_steps'], execute=not args.dry_run, pool=pool,
+                                  infer_chunk=infer_chunk, max_step_deg=run['max_step_deg'],
+                                  g05_frequency=args.g05_frequency, max_steps=args.max_steps)
                     print(f'Stopped after {r["steps"]} steps in {r["seconds"]:.1f}s ({r["hz"]:.1f} Hz). '
                           f'{r["switches"]} chunks, mean inference {r["latency"]:.2f}s, '
                           f'{r["held"]} steps held waiting for a chunk, {r["dropped"]} late chunks dropped.')

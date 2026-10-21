@@ -23,8 +23,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # NOTE: /dev/ttyACM0 vs ttyACM1 is NOT stable on this machine (observed to
 # flip across reconnects). Default uses the fixed by-serial-number symlink
 # under /dev/serial/by-id/, which always points at the follower arm
-# (serial 5B8E114717) regardless of which ttyACMx number the kernel assigns.
-ARM_PORT="${ARM_PORT:-/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B8E114717-if00}"
+# (serial 5B79017804) regardless of which ttyACMx number the kernel assigns.
+ARM_PORT="${ARM_PORT:-/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B79017804-if00}"
 ROBOT_ID="${ROBOT_ID:-follower_arm}"   # reuse the calibration already done via teleoperate.sh
 
 # front = Intel RealSense D435, fixed overview of the whole table. Accessed

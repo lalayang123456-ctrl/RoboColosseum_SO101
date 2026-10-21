@@ -62,7 +62,7 @@ from lerobot.utils.feature_utils import combine_feature_dicts
 from lerobot.utils.utils import init_logging
 
 BY_ID = "/dev/serial/by-id"
-DEFAULT_FOLLOWER_PORT = f"{BY_ID}/usb-1a86_USB_Single_Serial_5B8E114717-if00"
+DEFAULT_FOLLOWER_PORT = f"{BY_ID}/usb-1a86_USB_Single_Serial_5B79017804-if00"
 DEFAULT_LEADER_PORT = f"{BY_ID}/usb-1a86_USB_Single_Serial_5B79016937-if00"
 DEFAULT_FRONT_SERIAL = "262522073381"  # RealSense D435, table overview
 # USB2.0_CAM1 mounted on the arm. Fixed by-id path: /dev/videoN numbers get

@@ -33,7 +33,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--host", default="localhost")
     p.add_argument("--port", type=int, default=8006)
-    p.add_argument("--arm-port", default="/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B8E114717-if00")
+    p.add_argument("--arm-port", default="/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B79017804-if00")
     p.add_argument("--robot-id", default="follower_arm")
     p.add_argument("--front-serial", default="262522073381")
     # By stable path, not a /dev/videoN index: those change across reboots (index 4 became a
