@@ -66,7 +66,7 @@ index 0000000..c4ef84f
 +# test: true bypasses all hardware, including calibration checks.
 +test: false
 diff --git a/docs/client-reference.md b/docs/client-reference.md
-index 20845a7..10fc9a8 100644
+index ab0d1b6..99819b7 100644
 --- a/docs/client-reference.md
 +++ b/docs/client-reference.md
 @@ -300,7 +300,10 @@ result submission before a fresh start; it cannot revive a replaced assignment.
@@ -167,10 +167,10 @@ index cfab8ff..ce6caf3 100644
  modelscope = ["modelscope-hub>=0.4.5,<0.5"]
  huggingface = ["huggingface-hub>=1.0,<2"]
 diff --git a/src/colosseum_client/adapters.py b/src/colosseum_client/adapters.py
-index 2e387cf..161b62c 100644
+index 4c651ae..4aed068 100644
 --- a/src/colosseum_client/adapters.py
 +++ b/src/colosseum_client/adapters.py
-@@ -37,12 +37,14 @@ def load_adapter_factory(name: str):
+@@ -38,9 +38,9 @@ def load_adapter_factory(name: str):
      return factory
  
  
@@ -179,6 +179,10 @@ index 2e387cf..161b62c 100644
      if config.test or config.robot_type == 'test':
 -        return TestRobot(config)
 +        return TestRobot(config, control_mode=control_mode)
+     if config.robot_type == 'yam' and action_space == 'eef_abs_pose':
+         from .robots.yam_eef import YAMEEFRobot
+         return YAMEEFRobot(config)
+@@ -50,6 +50,8 @@ def make_robot(config: RobotClientConfig, *, action_space: str = "joint_position
      if config.robot_type == 'franka':
          return DroidRobot(config.cameras, action_space=action_space,
                            image_size=(config.image_width, config.image_height))
@@ -187,7 +191,7 @@ index 2e387cf..161b62c 100644
      return load_adapter_factory(config.robot_type)(config)
  
  
-@@ -54,7 +56,7 @@ class TestRobot(Robot):
+@@ -61,7 +63,7 @@ class TestRobot(Robot):
      action_dim = 8
      action_space_name = 'joint_position'
  
@@ -196,15 +200,15 @@ index 2e387cf..161b62c 100644
          import numpy as np
          self.robot_type = config.robot_type
          self.cameras = list(config.cameras)
-@@ -62,6 +64,7 @@ class TestRobot(Robot):
-         self.joints = np.zeros(7, dtype=np.float32)
+@@ -70,6 +72,7 @@ class TestRobot(Robot):
          self.gripper = np.zeros(1, dtype=np.float32)
+         self.eef_state = np.zeros(14, dtype=np.float32)
          self.step = 0
 +        self.control_mode = control_mode
  
      def configure_model(self, model):
          import numpy as np
-@@ -77,6 +80,8 @@ class TestRobot(Robot):
+@@ -85,6 +88,8 @@ class TestRobot(Robot):
              if self.action_dim != 6:
                  raise ValueError('Synthetic SO101 requires 6-D joint_position')
              self.joint_count = 5
@@ -213,15 +217,15 @@ index 2e387cf..161b62c 100644
          self.joints = np.zeros(self.joint_count, dtype=np.float32)
  
      def get_observation(self):
-@@ -87,13 +92,20 @@ class TestRobot(Robot):
-             image[:] = [32,128,224]
+@@ -96,13 +101,20 @@ class TestRobot(Robot):
              image[:,self.step % self.width,:] = 255
              images[camera] = image
--        return RobotObservation(images, self.joints.copy(), self.gripper.copy(), np.zeros(6,dtype=np.float32))
+         cartesian = self.eef_state.copy() if self.action_space_name == 'eef_abs_pose' else np.zeros(6,dtype=np.float32)
+-        return RobotObservation(images, self.joints.copy(), self.gripper.copy(), cartesian)
 +        extra = ({'eef_state': np.r_[np.zeros(6, dtype=np.float32), self.gripper].astype(np.float32),
 +                  'eef_quat_wxyz': np.array([1, 0, 0, 0], dtype=np.float32)}
 +                 if self.control_mode == 'eef_delta_pose' else {})
-+        return RobotObservation(images, self.joints.copy(), self.gripper.copy(), np.zeros(6,dtype=np.float32), extra)
++        return RobotObservation(images, self.joints.copy(), self.gripper.copy(), cartesian, extra)
  
      def execute(self, action):
          import numpy as np
@@ -279,10 +283,10 @@ index a00384b..63c8830 100644
 +  _globals['_LOCALCONTROL']._serialized_end=2891
  # @@protoc_insertion_point(module_scope)
 diff --git a/src/colosseum_client/diagnostics.py b/src/colosseum_client/diagnostics.py
-index ceb1bdd..0542508 100644
+index e7dea38..bd677f7 100644
 --- a/src/colosseum_client/diagnostics.py
 +++ b/src/colosseum_client/diagnostics.py
-@@ -31,9 +31,9 @@ def execute_robot_action(robot, action, step, enabled=True):
+@@ -31,7 +31,7 @@ def execute_robot_action(robot, action, step, enabled=True):
  
  async def execute_robot_action_async(robot, action, step, robot_call, enabled=True):
      if not enabled:
@@ -290,13 +294,9 @@ index ceb1bdd..0542508 100644
 +        return None
      execute = getattr(robot, 'execute_async', None)
      if execute is not None:
--        await execute(action, robot_call)
-+        return await execute(action, robot_call)
-     else:
--        await robot_call(execute_robot_action, robot, action, step, True)
-+        return await robot_call(robot.execute, action)
+         return await execute(action, robot_call)
 diff --git a/src/colosseum_client/evaluation.py b/src/colosseum_client/evaluation.py
-index 5b1af92..9d1aba1 100644
+index fc906fa..c240e90 100644
 --- a/src/colosseum_client/evaluation.py
 +++ b/src/colosseum_client/evaluation.py
 @@ -18,6 +18,7 @@ import time
@@ -307,15 +307,6 @@ index 5b1af92..9d1aba1 100644
  
  from .adapters import make_robot
  from .diagnostics import read_observation, execute_robot_action_async, close_resources
-@@ -62,7 +63,7 @@ class EvalAPI:
-     def request(self, method, path, body=None):
-         if method.upper() == 'POST' and path == '/next' and getattr(self.config, 'llm_api_urls', []):
-             body = {**body, 'llm_api_urls': self.config.llm_api_urls,
--                    'llm_providers': list(self.config.llm_api_keys)}
-+                    'llm_providers': self.config.llm_providers}
-         response = self.client.request(method, '/api/eval' + path, json=body,
-             timeout=1800 if path.endswith('/dataset/complete') else 30)
-         if response.status_code == 409:
 @@ -218,8 +219,19 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                  raise ProtocolError('Physical local trial requires operator confirmation before RobotEnv construction')
              options = {'before_start': confirm_live} if local_mode and not config.test else {}
@@ -334,27 +325,28 @@ index 5b1af92..9d1aba1 100644
 +                if mode == 'eef_delta_pose':
 +                    factory_options['control_mode'] = mode
 +                robot = await robot_call(robot_factory, config, **factory_options)
-                 # Optional driver hook: a rig may start some models from their own home pose.
-                 prepare = getattr(robot, 'prepare_for_model', None)
-                 if prepare is not None and execute_action and not config.test:
-@@ -234,11 +246,14 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
-                 save(path / 'policy.json', {'run_id': run['id'], 'model': client.model})
+                 prepare_trial = getattr(robot, 'prepare_for_trial', None)
+                 if prepare_trial is not None:
+                     if not execute_action:
+@@ -240,11 +252,15 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
              if config.recording:
+                 eef_control = robot.action_space_name == 'eef_abs_pose'
                  save(path / 'recording-context.json', {
 -                    'robot_type': config.robot_type, 'fps': config.control_hz,
 +                    'robot_type': config.robot_type, 'fps': trial_hz,
-                     'action_space': robot.action_space_name,
+                     'action_space': 'joint_position' if eef_control else robot.action_space_name,
                      'execution_enabled': execute_action, 'test': config.test,
                      'joint_step_mode': getattr(robot, 'joint_step_mode', None),
--                    'action_recording': 'policy_targets',
+-                    'action_recording': 'post_ik_sent_joint_commands' if eef_control else 'policy_targets',
 +                    'native_control_mode': native_mode,
 +                    'action_recording': ('accepted_joint_commands_after_eef_ik'
 +                                         if local_mode and native_mode == 'eef_delta_pose'
++                                         else 'post_ik_sent_joint_commands' if eef_control
 +                                         else 'policy_targets'),
                      'joint_max_step': config.adapter_config.get('joint_max_step')})
                  record_cameras = trial_cameras(config, task)
                  print(f"Recording cameras: {record_cameras} (Router task cameras: {task['cameras']})", flush=True)
-@@ -262,17 +277,31 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
+@@ -268,12 +284,27 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                      plan = await client.infer(observation, deadline_ms=config.deadline_ms)
                      actions = action_chunk(plan, control_step=step, expected_dim=robot.action_dim)
                      chunk_index = 0
@@ -363,16 +355,14 @@ index 5b1af92..9d1aba1 100644
 +                        await robot_call(begin_chunk)
                      print(f'Received action chunk at step {step}: {len(actions)} actions (execution {"enabled" if execute_action else "skipped"}).', flush=True)
                  action = actions[chunk_index]
--                if recorder is not None:
 +                eef_mode = local_mode and native_mode == 'eef_delta_pose'
-+                if recorder is not None and not eef_mode:
-                     recorder.add(current, action, captured_at=captured_at)
                  if local_mode:
                      await client.before_action(step)
--                await execute_robot_action_async(robot, action, step, robot_call, execute_action)
-+                accepted = await execute_robot_action_async(robot, action, step, robot_call, execute_action)
+                 sent = await execute_robot_action_async(robot, action, step, robot_call, execute_action)
+-                if recorder is not None:
 +                if eef_mode:
-+                    accepted = np.asarray(accepted, dtype=np.float32)
++                    # SO101 EEF: record the joint command the driver accepted after IK.
++                    accepted = np.asarray(sent, dtype=np.float32)
 +                    if accepted.shape != (client.model['action_dim'],) or not np.isfinite(accepted).all():
 +                        raise ValueError('SO101 EEF driver did not report a valid accepted joint command')
 +                    if recorder is not None:
@@ -381,6 +371,11 @@ index 5b1af92..9d1aba1 100644
 +                    with (path / 'eef-actions.jsonl').open('a', encoding='utf-8') as target_log:
 +                        target_log.write(json.dumps({'step': step, 'eef_delta': np.asarray(action).tolist(),
 +                                                     'accepted_joint_command': accepted.tolist()}) + '\n')
++                elif recorder is not None:
+                     if robot.action_space_name == 'eef_abs_pose':
+                         if sent is None:
+                             raise RuntimeError('YAM EE step returned no sent joint command')
+@@ -283,7 +314,7 @@ async def run_trial(config, assignment, run, path, api, *, robot_factory=make_ro
                  chunk_index += 1
                  step += 1
                  # Include observation, inference and execution in the control period.
@@ -389,7 +384,7 @@ index 5b1af92..9d1aba1 100644
              if recorder is not None:
                  final_observation = await robot_call(robot.get_observation)
                  recorder.add(final_observation)
-@@ -467,6 +496,8 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
+@@ -478,6 +509,8 @@ def run_evaluation(config, *, track=None, resume=None, abort=None, execute_actio
                          metadata={'assignment_id': assignment['id'], 'run_id': run['id'],
                              'side': run['side'], 'track': track, 'test': context['test'],
                              'action_space': context['action_space'],
@@ -399,10 +394,10 @@ index 5b1af92..9d1aba1 100644
                              'institution': assignment.get('institution', config.institution),
                              'scene': assignment.get('scene', config.scene),
 diff --git a/src/colosseum_client/lerobot_export.py b/src/colosseum_client/lerobot_export.py
-index bfe29b0..9c02d0f 100644
+index d110955..7855c64 100644
 --- a/src/colosseum_client/lerobot_export.py
 +++ b/src/colosseum_client/lerobot_export.py
-@@ -99,7 +99,9 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
+@@ -107,7 +107,9 @@ def export_trial(path: Path, cameras: list[str], *, fps: int, robot_type: str,
                 "cameras": cameras, "policy": json.loads(policy_path.read_text()) if policy_path.exists() else None,
                 "timestamp_semantics": "frame_index / nominal control FPS; no resampling",
                 "capture_timestamp_semantics": "original seconds since recorder start",
@@ -414,44 +409,34 @@ index bfe29b0..9c02d0f 100644
          context["state_action_order"] = "left_joint_1..6,left_gripper,right_joint_1..6,right_gripper"
          context["state_action_units"] = "radians; grippers normalized 0 closed, 1 open"
 diff --git a/src/colosseum_client/llm_credentials.py b/src/colosseum_client/llm_credentials.py
-index 788fd90..28e46bd 100644
+index 3e21d29..26c2837 100644
 --- a/src/colosseum_client/llm_credentials.py
 +++ b/src/colosseum_client/llm_credentials.py
-@@ -35,7 +35,7 @@ def require_secure_policy_url(url):
-         raise ValueError('LLM keys require wss:// or a loopback ws:// SSH tunnel to Policy Server')
- 
- 
--def local_preparation(preparation, keys, policy_url):
-+def local_preparation(preparation, keys, policy_url, account_logins=None):
-     """Return a copy carrying only this model's key; never alter Router data."""
-     model = preparation['model']
-     if model.get('model_type', 'vla') != 'llm':
-@@ -45,6 +45,9 @@ def local_preparation(preparation, keys, policy_url):
-                      [('gpt-', 'openai'), ('grok-', 'xai'), ('claude-', 'anthropic')]
-                      if model.get('name', '').startswith(prefix)), None)
+@@ -52,6 +52,9 @@ def local_preparation(preparation, keys, policy_url, *, account_logins=None,
+         options['auth_method'] = 'claude-code'
+         return {**preparation, 'message': json.dumps({'client_options': options})}
      key = keys.get(provider)
 +    account = (account_logins or {}).get(provider)
 +    if account == 'claude-code' and provider == 'anthropic':
 +        return {**preparation, 'llm_auth': 'claude-code'}
      if not key:
          raise ValueError('Assigned LLM has no matching Client API key')
-     return {**preparation, 'api_key': key}
+     result = {**preparation, 'api_key': key}
 diff --git a/src/colosseum_client/local_policy.py b/src/colosseum_client/local_policy.py
-index 86ef526..1bca747 100644
+index a7c536a..f1d6bd8 100644
 --- a/src/colosseum_client/local_policy.py
 +++ b/src/colosseum_client/local_policy.py
-@@ -46,6 +46,10 @@ class LocalPolicyClient(ColosseumClient):
-         self.control_base = urlunsplit(('wss' if parts.scheme == 'https' else 'ws', parts.netloc,
+@@ -47,6 +47,9 @@ class LocalPolicyClient(ColosseumClient):
                                         parts.path.rstrip('/'), '', ''))
          self.llm_api_keys = dict(getattr(config, "llm_api_keys", {}))
-+        self.llm_account_logins = dict(getattr(config, "llm_account_logins", {}))
+         self.llm_account_logins = dict(getattr(config, "llm_account_logins", {}))
 +        self.llm_control_mode = getattr(config, "llm_control_mode", "joint_pos")
 +        self.native_control_mode = "joint_pos"
 +        self.native_action_dim = None
          self.router_token = config.token
          self.institution = config.institution.strip()
          self.test_robot = config.test or config.robot_type == "test"
-@@ -80,9 +84,10 @@ class LocalPolicyClient(ColosseumClient):
+@@ -82,9 +85,10 @@ class LocalPolicyClient(ColosseumClient):
          self.model = self.router_model
          self.task = preparation['task']
          dimensions = {a.name: a.action_dim for a in self.robot_spec.action_spaces}
@@ -463,16 +448,7 @@ index 86ef526..1bca747 100644
              raise ProtocolError('Assigned model does not support this robot action contract')
          simulate = False
          # Router credentials never travel to the local service.
-@@ -94,7 +99,7 @@ class LocalPolicyClient(ColosseumClient):
-         from .llm_credentials import local_preparation
-         await self.connection.send(encode_control(
-             local_preparation({**preparation, 'robot_type': self.hardware_robot_type},
--                              self.llm_api_keys, self.router_url)))
-+                              self.llm_api_keys, self.router_url, self.llm_account_logins)))
-         async with timeout(self.prepare_timeout):
-             while True:
-                 ready = await receive_control(self.connection, self.prepare_timeout)
-@@ -128,6 +133,15 @@ class LocalPolicyClient(ColosseumClient):
+@@ -132,6 +136,18 @@ class LocalPolicyClient(ColosseumClient):
                      ready = {**ready, 'type':'ready', 'state':'simulation'}
                  if ready.get('type') != 'ready' or ready.get('model') != self.router_model:
                      raise ProtocolError('Local model revision/profile mismatch')
@@ -480,6 +456,9 @@ index 86ef526..1bca747 100644
 +                internal_dim = ready.get('internal_action_dim', self.model['action_dim'])
 +                expected_mode = (self.llm_control_mode if self.model.get('model_type') == 'llm'
 +                                 else 'joint_pos')
++                if mode == 'eef_abs_pose' and self.use_local_action_contract:
++                    # YAM EE: the effective model in ready.message carries the action space.
++                    expected_mode = mode
 +                expected_dim = (7 if expected_mode == 'eef_delta_pose' else self.model['action_dim'])
 +                if mode != expected_mode or internal_dim != expected_dim:
 +                    raise ProtocolError('Local control mode or internal action dimension differs from Client config')
@@ -488,7 +467,7 @@ index 86ef526..1bca747 100644
                  if self.use_local_action_contract:
                      extra = {}
                      raw_message = ready.get('message')
-@@ -143,7 +157,8 @@ class LocalPolicyClient(ColosseumClient):
+@@ -149,7 +165,8 @@ class LocalPolicyClient(ColosseumClient):
                              or effective.get('subfolder', '') != self.router_model.get('subfolder', '')):
                          raise ProtocolError('Local effective model identity mismatch')
                      if (dimensions.get(effective.get('action_space')) != effective.get('action_dim')
@@ -499,42 +478,22 @@ index 86ef526..1bca747 100644
                      self.model = effective
                  break
 diff --git a/src/colosseum_client/robot_config.py b/src/colosseum_client/robot_config.py
-index ba1e654..4a16bf5 100644
+index 7ac71d4..df49435 100644
 --- a/src/colosseum_client/robot_config.py
 +++ b/src/colosseum_client/robot_config.py
-@@ -14,6 +14,8 @@ class RobotClientConfig:
-     token: str
+@@ -15,6 +15,7 @@ class RobotClientConfig:
      cameras: Mapping[str, str]
      llm_api_keys: Mapping[str, str] = field(default_factory=dict, repr=False)
-+    llm_account_logins: Mapping[str, str] = field(default_factory=dict)
+     llm_account_logins: Mapping[str, str] = field(default_factory=dict)
 +    llm_control_mode: str = "joint_pos"
      institution: str = ""
      scene: str = ""
      evaluator: str = ""
-@@ -44,14 +46,28 @@ class RobotClientConfig:
-     @property
-     def llm_api_urls(self):
-         from .llm_credentials import API_URLS
--        return [API_URLS[name] for name in self.llm_api_keys]
-+        return [API_URLS[name] for name in dict.fromkeys((*self.llm_api_keys, *self.llm_account_logins))]
-+
-+    @property
-+    def llm_providers(self):
-+        return list(dict.fromkeys((*self.llm_api_keys, *self.llm_account_logins)))
- 
-     def __post_init__(self) -> None:
-         from .llm_credentials import resolve_keys, require_secure_policy_url
-         keys = resolve_keys(self.llm_api_keys)
--        if keys:
-+        logins = dict(self.llm_account_logins)
-+        if logins and logins != {'anthropic': 'claude-code'}:
-+            raise ValueError('llm_account_logins currently supports only anthropic: claude-code')
-+        if 'anthropic' in keys and 'anthropic' in logins:
-+            raise ValueError('Use either an Anthropic API key or Claude Code account login')
-+        if keys or logins:
+@@ -63,6 +64,11 @@ class RobotClientConfig:
+         if keys or self.llm_account_logins:
              require_secure_policy_url(self.policy_server_url)
          object.__setattr__(self, 'llm_api_keys', keys)
-+        object.__setattr__(self, 'llm_account_logins', logins)
++        object.__setattr__(self, 'llm_account_logins', dict(self.llm_account_logins))
 +        if self.llm_control_mode not in {'joint_pos', 'eef_delta_pose'}:
 +            raise ValueError('llm_control_mode must be joint_pos or eef_delta_pose')
 +        if self.llm_control_mode == 'eef_delta_pose' and self.robot_type != 'so101':
@@ -542,20 +501,19 @@ index ba1e654..4a16bf5 100644
          for name in ('policy_ping_interval', 'policy_ping_timeout'):
              if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                  raise ValueError(f'{name} must be a positive integer in seconds')
-@@ -100,7 +116,7 @@ class RobotClientConfig:
+@@ -111,7 +117,7 @@ class RobotClientConfig:
              "institution", "test", "use_local_action_contract", "scene", "evaluator", "track", "policy_server_url", "prepare_timeout",
              "robot_type", "adapter", "adapter_config", "api_url", "evaluation_dir", "recording", "skip_upload", "max_trial_steps",
              "url", "dataset_url", "dataset_token", "dataset_token_file",
--            "token", "llm_api_keys",
+-            "token", "llm_api_keys", "llm_account_logins",
 +            "token", "llm_api_keys", "llm_account_logins", "llm_control_mode",
              "cameras",
              "instruction",
              "control_hz",
-@@ -140,6 +156,8 @@ class RobotClientConfig:
-             url=value["url"],
+@@ -152,6 +158,7 @@ class RobotClientConfig:
              token=value["token"],
              llm_api_keys=value.get("llm_api_keys", {}),
-+            llm_account_logins=value.get("llm_account_logins", {}),
+             llm_account_logins=value.get("llm_account_logins", {}),
 +            llm_control_mode=value.get("llm_control_mode", "joint_pos"),
              cameras={name: str(camera_id) for name, camera_id in cameras.items()} or ({'head_image':'dummy'} if value.get('test', False) else {}),
              scene=value.get("scene", ""),
@@ -1019,15 +977,13 @@ index 0000000..ee8d0c4
 +    exported = json.loads((dataset / 'meta/colosseum.json').read_text())
 +    assert exported['action_semantics'] == 'driver-accepted joint command after EEF IK'
 diff --git a/tests/test_llm_credentials.py b/tests/test_llm_credentials.py
-index 52e3eb7..ac135ac 100644
+index 5445d23..b91e40c 100644
 --- a/tests/test_llm_credentials.py
 +++ b/tests/test_llm_credentials.py
-@@ -76,3 +76,19 @@ def test_shared_relay_selects_key_by_model_name(name, provider):
-     assert 'api_key' not in prepare
-     with pytest.raises(ValueError, match='no matching'):
+@@ -78,6 +78,23 @@ def test_shared_relay_selects_key_by_model_name(name, provider):
          local_preparation(prepare, {k:v for k,v in keys.items() if k != provider}, 'ws://localhost:8000')
-+
-+
+ 
+ 
 +def test_claude_account_advertises_provider_without_sending_api_key():
 +    cfg = config(llm_account_logins={'anthropic': 'claude-code'})
 +    assert cfg.llm_providers == ['anthropic']
@@ -1036,17 +992,23 @@ index 52e3eb7..ac135ac 100644
 +                   'model': {'model_type': 'llm', 'name': 'claude-opus-5-5',
 +                              'url': 'https://api.anthropic.com/v1'}}
 +    actual = decode_control(encode_control(local_preparation(
-+        preparation, cfg.llm_api_keys, cfg.policy_server_url, cfg.llm_account_logins)))
-+    assert actual['llm_auth'] == 'claude-code'
++        preparation, cfg.llm_api_keys, cfg.policy_server_url,
++        account_logins=cfg.llm_account_logins)))
++    assert json.loads(actual['message'])['client_options']['auth_method'] == 'claude-code'
 +    assert 'api_key' not in actual
-+    with pytest.raises(ValueError, match='either an Anthropic API key'):
++    with pytest.raises(ValueError, match='Choose an API key'):
 +        config(llm_api_keys={'anthropic': 'key'},
 +               llm_account_logins={'anthropic': 'claude-code'})
++
++
+ def test_claude_account_login_is_declared_without_api_key():
+     cfg = config(llm_api_keys={'openai': 'openai-secret', 'xai': 'xai-secret'},
+                  llm_account_logins={'anthropic': 'claude-code'})
 diff --git a/tests/test_local_policy.py b/tests/test_local_policy.py
-index cf08c5d..a5f0630 100644
+index a08536b..2bb3fb6 100644
 --- a/tests/test_local_policy.py
 +++ b/tests/test_local_policy.py
-@@ -134,6 +134,59 @@ async def test_ready_starts_inference_without_router_ack(monkeypatch, receipt, p
+@@ -135,6 +135,61 @@ async def test_ready_starts_inference_without_router_ack(monkeypatch, receipt, p
          await asyncio.gather(c.receiver_task,c.reporting_task,c.heartbeat_task,return_exceptions=True)
  
  
@@ -1081,7 +1043,8 @@ index cf08c5d..a5f0630 100644
 +                'control_mode': 'eef_delta_pose', 'internal_action_dim': 7})
 +        async def send(self, raw):
 +            sent = decode_control(raw)
-+            assert sent['llm_auth'] == 'claude-code' and 'api_key' not in sent
++            assert json.loads(sent['message'])['client_options']['auth_method'] == 'claude-code'
++            assert 'api_key' not in sent
 +        def __aiter__(self): return self
 +        async def __anext__(self):
 +            await asyncio.Event().wait()
@@ -1103,9 +1066,10 @@ index cf08c5d..a5f0630 100644
 +                               if task is not None), return_exceptions=True)
 +
 +
- async def test_background_router_rejection_stops_further_actions():
-     from colosseum_client.local_protocol import encode_control
-     c=client()
++@pytest.mark.asyncio
+ async def test_eef_effective_contract_keeps_router_joint_identity(monkeypatch):
+     from colosseum_client.local_protocol import encode_control, decode_control
+     from colosseum_client import local_policy
 diff --git a/tests/test_so101.py b/tests/test_so101.py
 index 407aa65..960d429 100644
 --- a/tests/test_so101.py

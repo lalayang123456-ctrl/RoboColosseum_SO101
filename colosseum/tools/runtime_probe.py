@@ -10,7 +10,7 @@ from this shell for gpt-* / grok-*, and the Policy Server host's Claude Code log
     colosseum-policy-server/.venv/bin/python colosseum/tools/runtime_probe.py \\
         colosseum-policy-server/configs/local-runtime-so101.yaml molmoact2-so101 outputs/colosseum/probe "Pick up the red cube."
 """
-import asyncio, os, sys, time
+import asyncio, json, os, sys, time
 import numpy as np
 from websockets.asyncio.client import connect
 from colosseum_policy_server import colosseum_pb2 as pb
@@ -24,7 +24,7 @@ def credentials():
     if not llm:
         return {}
     if name.startswith('claude-'):
-        return {'llm_auth': 'claude-code'}
+        return {'message': json.dumps({'client_options': {'auth_method': 'claude-code'}})}
     env = {'gpt-': 'OPENAI_API_KEY', 'grok-': 'XAI_API_KEY'}[name[:name.index('-') + 1]]
     if not os.environ.get(env):
         sys.exit(f'{name} needs {env} in this shell')

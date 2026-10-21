@@ -123,15 +123,15 @@ export ROOT=$PWD
 ```bash
 cd $ROOT
 git clone https://github.com/frodobots-org/colosseum-client.git
-git -C colosseum-client checkout -b so101-support 179af1b0336c9b9b661f60aba97689568ecc6d8c
+git -C colosseum-client checkout -b so101-support c37afee3fb345cda0cc669b6566ba700895460f0
 git -C colosseum-client apply $ROOT/colosseum/patches/colosseum-client-so101.patch
 
 git clone https://github.com/frodobots-org/colosseum-policy-server.git
-git -C colosseum-policy-server checkout -b so101-support 6a326e0c394dcb89397cfadb61108402c3ce1dac
+git -C colosseum-policy-server checkout -b so101-support 698b75d168da7b62073d6bec70608bb70e18160f
 git -C colosseum-policy-server apply $ROOT/colosseum/patches/colosseum-policy-server-so101.patch
 ```
 
-两个基准提交都在上游的 `main` 上。补丁是 `git diff <基准> so101-support` 生成的。原机器上已经验证过：在全新 clone 上应用后，文件树和 `so101-support` 的 HEAD 完全一致。应用后想留一个提交，就在两个目录里各跑一次 `git add -A && git commit -m "SO101 support"`。
+两个基准提交是上游 `main` 在 2026-10-19 的最新提交（合并了 `shailes-h` 的 PR #2），`so101-support` 已经合并了它们。补丁是 `git diff <基准> so101-support` 生成的。原机器上已经验证过：在全新 clone 上应用后，文件树和 `so101-support` 的 HEAD 完全一致。应用后想留一个提交，就在两个目录里各跑一次 `git add -A && git commit -m "SO101 support"`。
 
 **方式 B：直接用我们的 fork**（前提是 `so101-support` 分支已经推到 fork 上）
 
@@ -172,7 +172,7 @@ ln -sf "$(.venv/bin/python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_f
 验证：
 
 ```bash
-PATH=$PWD/.venv/bin:$PATH .venv/bin/python -m pytest -q      # 原机器：331 passed
+PATH=$PWD/.venv/bin:$PATH .venv/bin/python -m pytest -q      # 原机器：347 passed, 1 skipped
 ```
 
 ### 3.2 Policy Server（`colosseum-policy-server/.venv`）
@@ -180,7 +180,7 @@ PATH=$PWD/.venv/bin:$PATH .venv/bin/python -m pytest -q      # 原机器：331 p
 ```bash
 cd $ROOT/colosseum-policy-server
 uv sync --locked --python 3.12 --extra agent --extra droid --extra dev
-.venv/bin/python -m pytest -q          # 原机器：298 passed, 1 skipped
+.venv/bin/python -m pytest -q          # 原机器：307 passed, 1 skipped
 .venv/bin/python -c "import inspect_robots, inspect_robots_agent; print('agent ok')"
 ```
 
@@ -632,8 +632,8 @@ colosseum-client/.venv/bin/python scripts/run_open_model_smooth.py --model pi05 
 colosseum/
 ├── README.md                                   本文档
 ├── patches/
-│   ├── colosseum-client-so101.patch                基于上游 179af1b
-│   └── colosseum-policy-server-so101.patch         基于上游 6a326e0
+│   ├── colosseum-client-so101.patch                基于上游 c37afee
+│   └── colosseum-policy-server-so101.patch         基于上游 698b75d
 ├── configs/
 │   ├── local-runtime-so101-mixed-joint.yaml.template   Policy Server：5 VLA + 3 LLM（正式评测用）
 │   ├── robot.so101.joint.yaml.template                 Client：配合上一个
@@ -654,9 +654,10 @@ colosseum/
 
 ### 原机器上验证过什么（2026-10-21）
 
-- 两个子仓库的单元测试（Client 331 passed，Policy Server 298 passed / 1 skipped）；
+- 两个子仓库合并上游 2026-10-19 的 `main` 之后的单元测试（Client 347 passed / 1 skipped，Policy Server 307 passed / 1 skipped）；
 - 两份补丁在上游基准提交的全新 clone 上应用后，文件树和 `so101-support` HEAD 完全一致；
 - **用本文的模板生成配置，8 个模型全部走通了完整的本地协议**（7.3 节的表格），其中 LingBot 用的是 `checkpoints/Qwen3-VL-4B-Instruct`，Claude 用的是 `envs/claude-cli` 里新装的 CLI；
+- 合并上游之后，又用真正的 Client 代码（`LocalPolicyClient`，读 `robot.so101.joint.yaml`）连接真正的 Policy Server，只把 Router 换成本地模拟（重放 Router 以前实际下发的 8 个模型规格）。8 个模型都拿到了动作，3 个 LLM 都是 `joint_pos` 关节控制；
 - `envs/frozen/` 里 MolmoAct2、pi0.5、LingBot（加 `--no-deps`）三份清单，在空环境里用 `--dry-run` 都能完整解析；G05、Client、Policy Server 三个 `uv.lock` 都和各自的 `pyproject.toml` 一致；
 - 这条机械臂的驱动真机自检，以及 Open track 正式评测（含提交和上传）。
 
